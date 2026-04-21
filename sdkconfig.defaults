@@ -1,0 +1,14 @@
+# USB network class mode
+CONFIG_TINYUSB_NET_MODE_NCM=y
+
+# Chip revision compatibility:
+# Use this setting for ESP32-P4 rev1.x boards (your log shows chip rev v1.0).
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# Helpful logs during bring-up
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# Safer default for ESP32-P4 rev < 3.0
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y

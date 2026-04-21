@@ -1,0 +1,9 @@
+Command: cmake -G Ninja -B D:\000.P4CODE\ESP32P4_RNDIS_or_NCM\build -DPYTHON_DEPS_CHECKED=1 -DPYTHON=C:\Users\bisan\.espressif\python_env\idf6.0_py3.11_env\Scripts\python.exe -DESP_PLATFORM=1 -DCCACHE_ENABLE=True D:\000.P4CODE\ESP32P4_RNDIS_or_NCM
+Configuration Report               
++---------------------------------+
+|  Parser Version: 1              |
+|  Verbosity: default             |
+|  Defaults policy: sdkconfig     |
+|  Status: Finished successfully  |
+|                                 |
++---------------------------------+
