@@ -5,7 +5,8 @@ build*/
 managed_components/
 
 # VS Code local settings
-.vscode/
+.vscode/*
+!.vscode/settings.json
 
 # Common local/editor artifacts
 .idea/
