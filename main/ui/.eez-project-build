@@ -1,0 +1,32 @@
+{
+  "files": [
+    "actions.h",
+    "fonts.h",
+    "fonts/ui_font_font_15.c",
+    "fonts/ui_font_font_27.c",
+    "images.c",
+    "images.h",
+    "images/ui_image_like_disenable.c",
+    "images/ui_image_like_enable.c",
+    "images/ui_image_pause.c",
+    "images/ui_image_play.c",
+    "images/ui_image_playlist.c",
+    "images/ui_image_repeat_all.c",
+    "images/ui_image_repeat_disable.c",
+    "images/ui_image_repeat_one.c",
+    "images/ui_image_sentiment_neutral_disable.c",
+    "images/ui_image_sentiment_neutral_enable.c",
+    "images/ui_image_shu_disenable.c",
+    "images/ui_image_shu_enable.c",
+    "images/ui_image_skip_next_.c",
+    "images/ui_image_skip_previous.c",
+    "screens.c",
+    "screens.h",
+    "structs.h",
+    "styles.c",
+    "styles.h",
+    "ui.c",
+    "ui.h",
+    "vars.h"
+  ]
+}
