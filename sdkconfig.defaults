@@ -1,0 +1,33 @@
+# USB network class mode
+CONFIG_TINYUSB_NET_MODE_NCM=y
+
+# Chip revision compatibility:
+# Use this setting for ESP32-P4 rev1.x boards (your log shows chip rev v1.0).
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y
+
+# Helpful logs during bring-up
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_COLORS=y
+
+# Safer default for ESP32-P4 rev < 3.0
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
+
+# Match JC4880P443C_I_W demo hardware memory settings
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+
+# App image exceeds 1MB with LVGL/JPEG stack; use larger single-app partition.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions_singleapp_large.csv"
+
+# TLS certificate chain compatibility improvements (cross-signed + legacy roots)
+CONFIG_MBEDTLS_X509_TRUSTED_CERT_CALLBACK=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEPRECATED_LIST=y
+
+# ESP32-P4 rev1.x: disable unsupported ECDSA HW path and use software fallback
+# CONFIG_MBEDTLS_HARDWARE_ECDSA_VERIFY is not set
+# CONFIG_MBEDTLS_HARDWARE_ECC is not set
