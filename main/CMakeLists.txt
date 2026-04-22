@@ -16,8 +16,11 @@ idf_component_register(
         app_update
         bootloader_support
         esp_driver_jpeg
+        spiffs
         nvs_flash
         espressif__esp_tinyusb
         espressif__esp32_p4_function_ev_board
         lvgl__lvgl
 )
+
+spiffs_create_partition_image(storage font FLASH_IN_PROJECT)

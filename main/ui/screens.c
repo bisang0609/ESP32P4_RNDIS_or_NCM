@@ -48,10 +48,17 @@ void create_screen_main() {
     {
         lv_obj_t *parent_obj = obj;
         {
-            // albumart
+            // albumart_pan
             lv_obj_t *obj = lv_obj_create(parent_obj);
-            objects.albumart = obj;
-            lv_obj_set_pos(obj, 32, 40);
+            objects.albumart_pan = obj;
+            lv_obj_set_pos(obj, 20, 40);
+            lv_obj_set_size(obj, 410, 410);
+        }
+        {
+            // album_art
+            lv_obj_t *obj = lv_img_create(parent_obj);
+            objects.album_art = obj;
+            lv_obj_set_pos(obj, 25, 45);
             lv_obj_set_size(obj, 400, 400);
         }
         {
@@ -141,11 +148,13 @@ void create_screen_main() {
             lv_obj_t *obj = lv_label_create(parent_obj);
             lv_obj_set_pos(obj, 32, 15);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_18, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "YouTube Music Desktop Controler");
         }
         {
+            // next
             lv_obj_t *obj = lv_label_create(parent_obj);
-            objects.obj0 = obj;
+            objects.next = obj;
             lv_obj_set_pos(obj, 442, 411);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);

@@ -19,9 +19,9 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
-# App image exceeds 1MB with LVGL/JPEG stack; use larger single-app partition.
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
-CONFIG_PARTITION_TABLE_FILENAME="partitions_singleapp_large.csv"
+# Use custom partition table with large SPIFFS area for bin fonts.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # TLS certificate chain compatibility improvements (cross-signed + legacy roots)
 CONFIG_MBEDTLS_X509_TRUSTED_CERT_CALLBACK=y

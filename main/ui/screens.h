@@ -17,7 +17,8 @@ enum ScreensEnum {
 
 typedef struct _objects_t {
     lv_obj_t *main;
-    lv_obj_t *albumart;
+    lv_obj_t *albumart_pan;
+    lv_obj_t *album_art;
     lv_obj_t *song_title;
     lv_obj_t *song_artist;
     lv_obj_t *play;
@@ -27,7 +28,7 @@ typedef struct _objects_t {
     lv_obj_t *song_repeat;
     lv_obj_t *song_senti;
     lv_obj_t *song_like;
-    lv_obj_t *obj0;
+    lv_obj_t *next;
     lv_obj_t *next_song;
 } objects_t;
 
