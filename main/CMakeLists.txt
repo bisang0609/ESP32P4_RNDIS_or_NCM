@@ -1,5 +1,9 @@
 idf_component_register(
-    SRCS "main.c"
+    SRCS
+        "main.c"
+        "ncm_net.c"
+        "ytmd_client.c"
+        "ui_display.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_http_client
