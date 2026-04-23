@@ -54,8 +54,8 @@ static lv_fs_drv_t s_font_fs_drv;
 
 #define FONT_TTF_KR_PATH_A   "/spiffs/fonts/NotoSansKR-Regular.ttf"
 #define FONT_TTF_KR_PATH_B   "/spiffs/NotoSansKR-Regular.ttf"
-#define FONT_TTF_TITLE_SIZE  30
-#define FONT_TTF_BODY_SIZE   18
+#define FONT_TTF_TITLE_SIZE  34
+#define FONT_TTF_BODY_SIZE   22
 
 static uint32_t s_font_fs_bytes_since_yield = 0;
 
@@ -112,6 +112,7 @@ static void make_font_full_path(const char *path, char *out, size_t out_cap)
     snprintf(out, out_cap, "%s/%s", FONT_FS_BASE_PATH, rel);
 }
 
+#if FONT_LOAD_BIN_FALLBACK
 static void make_font_full_path_from_lvfs(const char *lvfs_path, char *out, size_t out_cap)
 {
     if (!out || out_cap == 0) {
@@ -133,6 +134,7 @@ static void make_font_full_path_from_lvfs(const char *lvfs_path, char *out, size
 
     snprintf(out, out_cap, "%s/%s", FONT_FS_BASE_PATH, real);
 }
+#endif
 
 static bool file_exists(const char *path)
 {
@@ -191,34 +193,6 @@ static bool load_file_blob(const char *path, uint8_t **out_blob, size_t *out_siz
     *out_blob = blob;
     *out_size = (size_t)file_sz;
     return true;
-}
-
-static const lv_font_t *choose_small_font_fallback(void)
-{
-    if (s_ttf_font_small) {
-        return s_ttf_font_small;
-    }
-#if LV_FONT_SOURCE_HAN_SANS_SC_14_CJK
-    return &lv_font_source_han_sans_sc_14_cjk;
-#elif LV_FONT_SOURCE_HAN_SANS_SC_16_CJK
-    return &lv_font_source_han_sans_sc_16_cjk;
-#else
-    return NULL;
-#endif
-}
-
-static const lv_font_t *choose_large_font_fallback(void)
-{
-    if (s_ttf_font_large) {
-        return s_ttf_font_large;
-    }
-#if LV_FONT_SOURCE_HAN_SANS_SC_16_CJK
-    return &lv_font_source_han_sans_sc_16_cjk;
-#elif LV_FONT_SOURCE_HAN_SANS_SC_14_CJK
-    return &lv_font_source_han_sans_sc_14_cjk;
-#else
-    return NULL;
-#endif
 }
 
 static void build_font_chain(lv_font_t *out_chain, bool *out_ready, const lv_font_t *base, const lv_font_t *fallback)
@@ -284,15 +258,20 @@ static void load_runtime_ttf_fonts(void)
 
 static void prepare_font_chains(void)
 {
-    const lv_font_t *base_small = fallback_small_font();
-    const lv_font_t *base_large = fallback_large_font();
-    const lv_font_t *fb_small = choose_small_font_fallback();
-    const lv_font_t *fb_large = choose_large_font_fallback();
+    const lv_font_t *fallback_small = fallback_small_font();
+    const lv_font_t *fallback_large = fallback_large_font();
+
+    // Use runtime TTF as base when available so font metrics match rendered glyph size.
+    const lv_font_t *base_small = s_ttf_font_small ? (const lv_font_t *)s_ttf_font_small : fallback_small;
+    const lv_font_t *base_large = s_ttf_font_large ? (const lv_font_t *)s_ttf_font_large : fallback_large;
+    const lv_font_t *fb_small = s_ttf_font_small ? fallback_small : NULL;
+    const lv_font_t *fb_large = s_ttf_font_large ? fallback_large : NULL;
 
     build_font_chain(&s_chain_font_small, &s_chain_font_small_ready, base_small, fb_small);
     build_font_chain(&s_chain_font_large, &s_chain_font_large_ready, base_large, fb_large);
 }
 
+#if FONT_LOAD_BIN_FALLBACK
 static void probe_font_file(const char *lvfs_path)
 {
     if (!lvfs_path || lvfs_path[0] == '\0') {
@@ -327,6 +306,7 @@ static void probe_font_file(const char *lvfs_path)
     }
     lv_fs_close(&file);
 }
+#endif
 
 static void *font_fs_open_cb(lv_fs_drv_t *drv, const char *path, lv_fs_mode_t mode)
 {

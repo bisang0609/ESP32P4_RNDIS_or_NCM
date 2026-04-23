@@ -51,5 +51,6 @@ idf_component_register(
 set_source_files_properties(ui/screens.c
     PROPERTIES COMPILE_OPTIONS "-include${CMAKE_CURRENT_LIST_DIR}/ui_screens_compat.h")
 
-# Build and flash the font filesystem image from main/font.
-littlefs_create_partition_image(storage font FLASH_IN_PROJECT)
+# main/font 기준으로 LittleFS(storage) 이미지를 생성합니다.
+# littlefs_create_partition_image(storage font FLASH_IN_PROJECT)  # `idf.py flash` 시 storage도 함께 플래시하려면 이 줄 사용
+littlefs_create_partition_image(storage font)                     # 기본적으로 app만 올리고 storage는 유지하려면 이 줄 사용

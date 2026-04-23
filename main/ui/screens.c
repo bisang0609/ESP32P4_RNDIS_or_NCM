@@ -24,6 +24,7 @@ lv_anim_t *get_anim() {
     if (!anim_initialized) {
         lv_anim_init(&anim);
         lv_anim_set_delay(&anim, 1000);
+        lv_anim_set_repeat_count(&anim, -1);
         anim_initialized = true;
     }
     return &anim;
@@ -64,32 +65,35 @@ void create_screen_main() {
             // song_title
             lv_obj_t *obj = lv_label_create(parent_obj);
             objects.song_title = obj;
-            lv_obj_set_pos(obj, 450, 80);
-            lv_obj_set_size(obj, 320, 56);
+            lv_obj_set_pos(obj, 450, 67);
+            lv_obj_set_size(obj, 320, 60);
             lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL_CIRCULAR);
             lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_anim(obj, get_anim(), LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_label_set_text_static(obj, "水平線 - Suiheisen입니다. 정말입니다.");
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_34, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_top(obj, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_anim_duration(obj, 30000, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_label_set_text_static(obj, "AAAAAAAAAAAAAAAAAAAAAAAAAAAA");
         }
         {
             // song_artist
             lv_obj_t *obj = lv_label_create(parent_obj);
             objects.song_artist = obj;
-            lv_obj_set_pos(obj, 450, 121);
-            lv_obj_set_size(obj, 320, 30);
+            lv_obj_set_pos(obj, 450, 125);
+            lv_obj_set_size(obj, 320, 40);
             lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL_CIRCULAR);
             lv_obj_set_style_anim(obj, get_anim(), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_label_set_text_static(obj, "여기는 가수가 들어갑니다. 정말입니다................................................................");
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_top(obj, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_label_set_text_static(obj, "AAAAAAAAAAAAAAAAAAAAAAA");
         }
         {
             // play
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.play = obj;
-            lv_obj_set_pos(obj, 567, 200);
+            lv_obj_set_pos(obj, 567, 187);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_play);
         }
@@ -97,7 +101,7 @@ void create_screen_main() {
             // skip_next
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.skip_next = obj;
-            lv_obj_set_pos(obj, 710, 225);
+            lv_obj_set_pos(obj, 710, 212);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_skip_next_);
         }
@@ -105,7 +109,7 @@ void create_screen_main() {
             // skip_prev
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.skip_prev = obj;
-            lv_obj_set_pos(obj, 474, 225);
+            lv_obj_set_pos(obj, 474, 212);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_skip_previous);
         }
@@ -113,7 +117,7 @@ void create_screen_main() {
             // song_random
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_random = obj;
-            lv_obj_set_pos(obj, 474, 322);
+            lv_obj_set_pos(obj, 474, 314);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_shu_disenable);
             lv_image_set_scale(obj, 120);
@@ -122,7 +126,7 @@ void create_screen_main() {
             // song_repeat
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_repeat = obj;
-            lv_obj_set_pos(obj, 553, 322);
+            lv_obj_set_pos(obj, 553, 314);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_repeat_disable);
             lv_image_set_scale(obj, 120);
@@ -131,7 +135,7 @@ void create_screen_main() {
             // song_senti
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_senti = obj;
-            lv_obj_set_pos(obj, 710, 322);
+            lv_obj_set_pos(obj, 710, 314);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_sentiment_neutral_disable);
             lv_image_set_scale(obj, 150);
@@ -140,7 +144,7 @@ void create_screen_main() {
             // song_like
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_like = obj;
-            lv_obj_set_pos(obj, 631, 322);
+            lv_obj_set_pos(obj, 631, 314);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_like_disenable);
             lv_image_set_scale(obj, 150);
@@ -156,24 +160,25 @@ void create_screen_main() {
             // next
             lv_obj_t *obj = lv_label_create(parent_obj);
             objects.next = obj;
-            lv_obj_set_pos(obj, 442, 411);
-            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_obj_set_pos(obj, 443, 410);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, 30);
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "Next");
         }
         {
             // next_song
             lv_obj_t *obj = lv_label_create(parent_obj);
             objects.next_song = obj;
-            lv_obj_set_pos(obj, 482, 411);
-            lv_obj_set_size(obj, 288, LV_SIZE_CONTENT);
+            lv_obj_set_pos(obj, 507, 410);
+            lv_obj_set_size(obj, 248, 40);
             lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL);
             lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_anim(obj, get_anim(), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
-            lv_label_set_text_static(obj, "다음가수 들어가는 자리입니다..............................................................");
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_top(obj, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_label_set_text_static(obj, "SSSSSSSSSSSSSSSSSSSSSS");
         }
     }
     
