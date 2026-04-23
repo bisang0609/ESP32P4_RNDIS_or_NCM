@@ -26,12 +26,19 @@ static const char *TAG = "USB_NCM_YTMD_ART";
 #define USB_LOCAL_IP_STR     "192.168.137.2"
 #define USB_GW_IP_STR        "192.168.137.1"
 #define USB_NETMASK_STR      "255.255.255.0"
-#define USB_DNS_MAIN_STR     "8.8.8.8"
-#define USB_DNS_BACKUP_STR   "1.1.1.1"
+#define USB_DNS_MAIN_STR     USB_GW_IP_STR
+#define USB_DNS_BACKUP_STR   "8.8.8.8"
+#define USB_DNS_FALLBACK_STR "1.1.1.1"
 
 static EventGroupHandle_t s_ev = NULL;
 static esp_netif_t *s_usb_netif = NULL;
 static TickType_t s_last_net_diag_tick = 0;
+
+static const char *s_dns_candidates[] = {
+    USB_GW_IP_STR,
+    "8.8.8.8",
+    "1.1.1.1",
+};
 
 static void tinyusb_event_handler(tinyusb_event_t *event, void *arg)
 {
@@ -113,6 +120,7 @@ static esp_err_t configure_usb_netif_ip(esp_netif_t *netif)
     esp_netif_ip_info_t ip_info = {0};
     esp_netif_dns_info_t dns_main = {0};
     esp_netif_dns_info_t dns_backup = {0};
+    esp_netif_dns_info_t dns_fallback = {0};
     ESP_RETURN_ON_ERROR(parse_static_ip(&ip_info), TAG, "parse_static_ip failed");
 
     esp_err_t err = esp_netif_dhcpc_stop(netif);
@@ -123,16 +131,66 @@ static esp_err_t configure_usb_netif_ip(esp_netif_t *netif)
     ESP_RETURN_ON_ERROR(esp_netif_set_ip_info(netif, &ip_info), TAG, "esp_netif_set_ip_info failed");
     dns_main.ip.type = ESP_IPADDR_TYPE_V4;
     dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
+    dns_fallback.ip.type = ESP_IPADDR_TYPE_V4;
     ESP_RETURN_ON_ERROR(esp_netif_str_to_ip4(USB_DNS_MAIN_STR, &dns_main.ip.u_addr.ip4), TAG, "Invalid main DNS");
     ESP_RETURN_ON_ERROR(esp_netif_str_to_ip4(USB_DNS_BACKUP_STR, &dns_backup.ip.u_addr.ip4), TAG, "Invalid backup DNS");
+    ESP_RETURN_ON_ERROR(esp_netif_str_to_ip4(USB_DNS_FALLBACK_STR, &dns_fallback.ip.u_addr.ip4), TAG, "Invalid fallback DNS");
     ESP_RETURN_ON_ERROR(esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns_main), TAG, "esp_netif_set_dns_info main failed");
     ESP_RETURN_ON_ERROR(esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns_backup), TAG, "esp_netif_set_dns_info backup failed");
+    ESP_RETURN_ON_ERROR(esp_netif_set_dns_info(netif, ESP_NETIF_DNS_FALLBACK, &dns_fallback), TAG, "esp_netif_set_dns_info fallback failed");
 
     ESP_LOGI(TAG, "USB netif static IP set: ip=" IPSTR " gw=" IPSTR " mask=" IPSTR,
              IP2STR(&ip_info.ip), IP2STR(&ip_info.gw), IP2STR(&ip_info.netmask));
-    ESP_LOGI(TAG, "USB netif DNS set: main=" IPSTR " backup=" IPSTR,
-             IP2STR(&dns_main.ip.u_addr.ip4), IP2STR(&dns_backup.ip.u_addr.ip4));
+    ESP_LOGI(TAG, "USB netif DNS set: main=" IPSTR " backup=" IPSTR " fallback=" IPSTR,
+             IP2STR(&dns_main.ip.u_addr.ip4), IP2STR(&dns_backup.ip.u_addr.ip4), IP2STR(&dns_fallback.ip.u_addr.ip4));
     return ESP_OK;
+}
+
+static bool set_dns_main(esp_netif_t *netif, const char *dns_ip_str)
+{
+    if (!netif || !dns_ip_str || dns_ip_str[0] == '\0') {
+        return false;
+    }
+
+    esp_netif_dns_info_t dns = {0};
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    if (esp_netif_str_to_ip4(dns_ip_str, &dns.ip.u_addr.ip4) != ESP_OK) {
+        return false;
+    }
+
+    if (esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns) != ESP_OK) {
+        return false;
+    }
+    return true;
+}
+
+static void try_dns_recovery_and_resolve(const char *host)
+{
+    if (!s_usb_netif || !host || host[0] == '\0') {
+        return;
+    }
+
+    for (size_t i = 0; i < sizeof(s_dns_candidates) / sizeof(s_dns_candidates[0]); ++i) {
+        const char *candidate = s_dns_candidates[i];
+        if (!set_dns_main(s_usb_netif, candidate)) {
+            ESP_LOGW(TAG, "NET DIAG: failed to switch DNS main to %s", candidate);
+            continue;
+        }
+
+        struct addrinfo hints = {0};
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_family = AF_UNSPEC;
+        struct addrinfo *ai = NULL;
+        int r = getaddrinfo(host, NULL, &hints, &ai);
+        ESP_LOGW(TAG, "NET DIAG: retry with DNS %s => getaddrinfo(%s)=%d ai=%p", candidate, host, r, ai);
+        if (ai) {
+            freeaddrinfo(ai);
+        }
+        if (r == 0) {
+            ESP_LOGW(TAG, "NET DIAG: DNS recovered with main=%s", candidate);
+            return;
+        }
+    }
 }
 
 static bool extract_host_from_url(const char *url, char *host, size_t host_cap)
@@ -316,5 +374,9 @@ void ncm_net_log_diagnostics(const char *url)
     ESP_LOGW(TAG, "NET DIAG: getaddrinfo(%s) => %d, ai=%p", host, r, ai);
     if (ai) {
         freeaddrinfo(ai);
+    }
+
+    if (r != 0) {
+        try_dns_recovery_and_resolve(host);
     }
 }

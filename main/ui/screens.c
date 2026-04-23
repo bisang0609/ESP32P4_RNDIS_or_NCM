@@ -2,7 +2,6 @@
 
 #include "screens.h"
 #include "images.h"
-#include "fonts.h"
 #include "actions.h"
 #include "vars.h"
 #include "styles.h"
@@ -56,7 +55,7 @@ void create_screen_main() {
         }
         {
             // album_art
-            lv_obj_t *obj = lv_img_create(parent_obj);
+            lv_obj_t *obj = lv_image_create(parent_obj);
             objects.album_art = obj;
             lv_obj_set_pos(obj, 25, 45);
             lv_obj_set_size(obj, 400, 400);
@@ -70,6 +69,7 @@ void create_screen_main() {
             lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL_CIRCULAR);
             lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_anim(obj, get_anim(), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "水平線 - Suiheisen입니다. 정말입니다.");
         }
         {
@@ -82,73 +82,74 @@ void create_screen_main() {
             lv_obj_set_style_anim(obj, get_anim(), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "여기는 가수가 들어갑니다. 정말입니다................................................................");
         }
         {
             // play
-            lv_obj_t *obj = lv_img_create(parent_obj);
+            lv_obj_t *obj = lv_image_create(parent_obj);
             objects.play = obj;
             lv_obj_set_pos(obj, 567, 200);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_img_set_src(obj, &img_play);
+            lv_image_set_src(obj, &img_play);
         }
         {
             // skip_next
-            lv_obj_t *obj = lv_img_create(parent_obj);
+            lv_obj_t *obj = lv_image_create(parent_obj);
             objects.skip_next = obj;
             lv_obj_set_pos(obj, 710, 225);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_img_set_src(obj, &img_skip_next_);
+            lv_image_set_src(obj, &img_skip_next_);
         }
         {
             // skip_prev
-            lv_obj_t *obj = lv_img_create(parent_obj);
+            lv_obj_t *obj = lv_image_create(parent_obj);
             objects.skip_prev = obj;
             lv_obj_set_pos(obj, 474, 225);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_img_set_src(obj, &img_skip_previous);
+            lv_image_set_src(obj, &img_skip_previous);
         }
         {
             // song_random
-            lv_obj_t *obj = lv_img_create(parent_obj);
+            lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_random = obj;
-            lv_obj_set_pos(obj, 474, 353);
+            lv_obj_set_pos(obj, 474, 322);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_img_set_src(obj, &img_shu_disenable);
-            lv_img_set_zoom(obj, 120);
+            lv_image_set_src(obj, &img_shu_disenable);
+            lv_image_set_scale(obj, 120);
         }
         {
             // song_repeat
-            lv_obj_t *obj = lv_img_create(parent_obj);
+            lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_repeat = obj;
-            lv_obj_set_pos(obj, 553, 353);
+            lv_obj_set_pos(obj, 553, 322);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_img_set_src(obj, &img_repeat_disable);
-            lv_img_set_zoom(obj, 120);
+            lv_image_set_src(obj, &img_repeat_disable);
+            lv_image_set_scale(obj, 120);
         }
         {
             // song_senti
-            lv_obj_t *obj = lv_img_create(parent_obj);
+            lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_senti = obj;
-            lv_obj_set_pos(obj, 710, 353);
+            lv_obj_set_pos(obj, 710, 322);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_img_set_src(obj, &img_sentiment_neutral_disable);
-            lv_img_set_zoom(obj, 150);
+            lv_image_set_src(obj, &img_sentiment_neutral_disable);
+            lv_image_set_scale(obj, 150);
         }
         {
             // song_like
-            lv_obj_t *obj = lv_img_create(parent_obj);
+            lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_like = obj;
-            lv_obj_set_pos(obj, 631, 353);
+            lv_obj_set_pos(obj, 631, 322);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_img_set_src(obj, &img_like_disenable);
-            lv_img_set_zoom(obj, 150);
+            lv_image_set_src(obj, &img_like_disenable);
+            lv_image_set_scale(obj, 150);
         }
         {
             lv_obj_t *obj = lv_label_create(parent_obj);
-            lv_obj_set_pos(obj, 32, 15);
+            lv_obj_set_pos(obj, 22, 9);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_obj_set_style_text_font(obj, &lv_font_montserrat_18, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "YouTube Music Desktop Controler");
         }
         {
@@ -158,6 +159,7 @@ void create_screen_main() {
             lv_obj_set_pos(obj, 442, 411);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "Next");
         }
         {
@@ -170,6 +172,7 @@ void create_screen_main() {
             lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_anim(obj, get_anim(), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "다음가수 들어가는 자리입니다..............................................................");
         }
     }
@@ -198,8 +201,6 @@ void tick_screen_by_id(enum ScreensEnum screenId) {
 //
 
 ext_font_desc_t fonts[] = {
-    { "font_27", &ui_font_font_27 },
-    { "font_15", &ui_font_font_15 },
 #if LV_FONT_MONTSERRAT_8
     { "MONTSERRAT_8", &lv_font_montserrat_8 },
 #endif
@@ -278,9 +279,9 @@ uint32_t active_theme_index = 0;
 void create_screens() {
 
 // Set default LVGL theme
-    lv_disp_t *dispp = lv_disp_get_default();
+    lv_display_t *dispp = lv_display_get_default();
     lv_theme_t *theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED), true, LV_FONT_DEFAULT);
-    lv_disp_set_theme(dispp, theme);
+    lv_display_set_theme(dispp, theme);
     
     // Initialize screens
     // Create screens

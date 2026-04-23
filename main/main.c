@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -28,12 +29,72 @@
 #include "soc/soc_caps.h"
 
 #include "ncm_net.h"
+#include "player_ui.h"
 #include "ui_display.h"
 #include "ytmd_client.h"
 
 static const char *TAG = "USB_NCM_YTMD_ART";
 
 static char s_last_art_url[YTMD_ART_URL_MAX_LEN] = {0};
+
+/* ?¬ìƒ ?íƒœ ??ytmd_client ?•ìž¥ ????êµ¬ì¡°ì²´ë? ì±„ì›Œ player_ui_update() ???„ë‹¬ */
+static ytmd_player_state_t s_player_state = {0};
+
+static bool update_text_field(char *dst, size_t dst_cap, const char *src)
+{
+    if (!dst || dst_cap == 0 || !src || src[0] == '\0') {
+        return false;
+    }
+    if (strncmp(dst, src, dst_cap - 1) == 0) {
+        return false;
+    }
+    snprintf(dst, dst_cap, "%s", src);
+    return true;
+}
+
+static bool apply_playback_state_to_player(const ytmd_client_playback_state_t *playback)
+{
+    if (!playback) {
+        return false;
+    }
+
+    bool changed = false;
+
+    if (playback->has_playing && s_player_state.is_playing != playback->is_playing) {
+        s_player_state.is_playing = playback->is_playing;
+        changed = true;
+    }
+    if (playback->has_shuffle && s_player_state.is_shuffle != playback->is_shuffle) {
+        s_player_state.is_shuffle = playback->is_shuffle;
+        changed = true;
+    }
+    if (playback->has_repeat) {
+        ytmd_repeat_t mapped = YTMD_REPEAT_NONE;
+        if (playback->repeat == YTMD_CLIENT_REPEAT_ALL) {
+            mapped = YTMD_REPEAT_ALL;
+        } else if (playback->repeat == YTMD_CLIENT_REPEAT_ONE) {
+            mapped = YTMD_REPEAT_ONE;
+        }
+        if (s_player_state.repeat != mapped) {
+            s_player_state.repeat = mapped;
+            changed = true;
+        }
+    }
+    if (playback->has_liked && s_player_state.is_liked != playback->is_liked) {
+        s_player_state.is_liked = playback->is_liked;
+        changed = true;
+    }
+    if (playback->has_disliked && s_player_state.is_disliked != playback->is_disliked) {
+        s_player_state.is_disliked = playback->is_disliked;
+        changed = true;
+    }
+    if (playback->has_next_song) {
+        changed |= update_text_field(s_player_state.next_title, sizeof(s_player_state.next_title), playback->next_title);
+        changed |= update_text_field(s_player_state.next_artist, sizeof(s_player_state.next_artist), playback->next_artist);
+    }
+
+    return changed;
+}
 
 static void format_mb_decimal(uint64_t bytes, char *out, size_t out_len)
 {
@@ -170,6 +231,9 @@ static void album_task(void *arg)
     (void)arg;
     const TickType_t wait_tick = pdMS_TO_TICKS(3000);
     char new_art_url[YTMD_ART_URL_MAX_LEN] = {0};
+    char new_title[PLAYER_TITLE_MAX_LEN] = {0};
+    char new_artist[PLAYER_ARTIST_MAX_LEN] = {0};
+    ytmd_client_playback_state_t playback_state = {0};
 
     while (1) {
         if (!ncm_net_wait_ready(wait_tick)) {
@@ -188,11 +252,33 @@ static void album_task(void *arg)
                                                      s_last_art_url,
                                                      new_art_url,
                                                      sizeof(new_art_url),
+                                                     new_title,
+                                                     sizeof(new_title),
+                                                     new_artist,
+                                                     sizeof(new_artist),
+                                                     &playback_state,
                                                      ncm_net_log_diagnostics);
+
+        bool text_changed = false;
+        text_changed |= update_text_field(s_player_state.title, sizeof(s_player_state.title), new_title);
+        text_changed |= update_text_field(s_player_state.artist, sizeof(s_player_state.artist), new_artist);
+
+        bool playback_changed = apply_playback_state_to_player(&playback_state);
+
         if (err == ESP_OK) {
             ui_display_present_album_art();
+            player_ui_update_album_art();
             snprintf(s_last_art_url, sizeof(s_last_art_url), "%s", new_art_url);
+            player_ui_update(&s_player_state);
             ESP_LOGI(TAG, "Album art updated: %s", s_last_art_url);
+            ESP_LOGI(TAG, "Now playing: %s - %s",
+                     s_player_state.title[0] ? s_player_state.title : "-",
+                     s_player_state.artist[0] ? s_player_state.artist : "-");
+        } else if (err == ESP_ERR_NOT_FOUND && (text_changed || playback_changed)) {
+            player_ui_update(&s_player_state);
+            ESP_LOGI(TAG, "Playback state updated: %s - %s",
+                     s_player_state.title[0] ? s_player_state.title : "-",
+                     s_player_state.artist[0] ? s_player_state.artist : "-");
         } else if (err != ESP_ERR_NOT_FOUND) {
             ESP_LOGW(TAG, "Album art poll failed: %s", esp_err_to_name(err));
         }
@@ -200,7 +286,6 @@ static void album_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(YTMD_POLL_INTERVAL_MS));
     }
 }
-
 void app_main(void)
 {
 #if !SOC_USB_OTG_SUPPORTED
@@ -213,6 +298,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(ncm_net_init());
     ESP_ERROR_CHECK(ui_display_init());
+    player_ui_init();
     log_memory_capacity_report();
 
     BaseType_t ok = xTaskCreate(

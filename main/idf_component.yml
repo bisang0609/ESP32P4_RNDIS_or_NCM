@@ -2,3 +2,5 @@
 dependencies:
   espressif/esp_tinyusb:
     version: "^2.0.0"
+  joltwallet/littlefs:
+    version: "^1.21.1"

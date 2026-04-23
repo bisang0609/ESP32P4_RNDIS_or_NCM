@@ -2,8 +2,6 @@
   "files": [
     "actions.h",
     "fonts.h",
-    "fonts/ui_font_font_15.c",
-    "fonts/ui_font_font_27.c",
     "images.c",
     "images.h",
     "images/ui_image_like_disenable.c",
