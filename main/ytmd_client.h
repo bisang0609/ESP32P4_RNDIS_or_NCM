@@ -18,6 +18,8 @@ typedef enum {
 typedef struct {
     bool has_playing;
     bool is_playing;
+    bool has_paused;
+    bool is_paused;
 
     bool has_shuffle;
     bool is_shuffle;
@@ -34,7 +36,25 @@ typedef struct {
     bool has_next_song;
     char next_title[256];
     char next_artist[128];
+
+    bool has_seek_seconds;
+    int seek_seconds;
+
+    bool has_elapsed_seconds;
+    int elapsed_seconds;
+
+    bool has_song_duration_seconds;
+    int song_duration_seconds;
 } ytmd_client_playback_state_t;
+
+typedef struct {
+    int index;
+    bool selected;
+    char title[256];
+    char artist[128];
+    char video_id[32];
+    char art_url[YTMD_ART_URL_MAX_LEN];
+} ytmd_client_queue_item_t;
 
 typedef void (*ytmd_network_diag_cb_t)(const char *url);
 
@@ -58,3 +78,9 @@ esp_err_t ytmd_client_cmd_toggle_shuffle(void);
 esp_err_t ytmd_client_cmd_cycle_repeat(void);
 esp_err_t ytmd_client_cmd_toggle_like(void);
 esp_err_t ytmd_client_cmd_toggle_dislike(void);
+
+esp_err_t ytmd_client_queue_cache_get(ytmd_client_queue_item_t *out_items,
+                                      size_t max_items,
+                                      size_t *out_copied,
+                                      size_t *out_total,
+                                      int *out_selected_pos);

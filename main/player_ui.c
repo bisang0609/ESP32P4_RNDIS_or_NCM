@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "esp_log.h"
 
@@ -17,6 +18,11 @@
 static const char *TAG = "PLAYER_UI";
 
 #define PLAYER_NEXT_LABEL_TEXT "Next"
+#define PLAYER_ALBUM_ART_RADIUS 6
+#define PLAYER_SKIP_PUSH_TIMEOUT_MS 5000U
+#define PLAYER_PREV_REWIND_THRESHOLD_SEC 5
+#define PLAYER_BG_ART_OPA LV_OPA_30
+#define PLAYER_BG_ART_RECOLOR_OPA LV_OPA_20
 
 typedef struct {
     lv_obj_t *album_art;
@@ -36,6 +42,20 @@ typedef struct {
 static player_ui_objects_t s_ui;
 static player_ui_control_ops_t s_control_ops;
 static void *s_control_ctx = NULL;
+static bool s_shuffle_ui_state = false;
+static bool s_shuffle_ui_state_valid = false;
+static ytmd_repeat_t s_repeat_ui_state = YTMD_REPEAT_NONE;
+static bool s_repeat_ui_state_valid = false;
+static bool s_skip_prev_feedback_pending = false;
+static bool s_skip_next_feedback_pending = false;
+static int s_skip_prev_press_seek_seconds = -1;
+static int s_skip_next_press_seek_seconds = -1;
+static uint32_t s_skip_prev_press_tick = 0;
+static uint32_t s_skip_next_press_tick = 0;
+static int s_latest_elapsed_seconds = -1;
+static char s_last_track_title[PLAYER_TITLE_MAX_LEN] = {0};
+static char s_last_track_artist[PLAYER_ARTIST_MAX_LEN] = {0};
+static lv_obj_t *s_album_bg = NULL;
 
 typedef struct {
     const char *name;
@@ -184,29 +204,29 @@ static void set_image_by_name(lv_obj_t *image_obj, const char *image_name)
 
 static void apply_player_fonts(void)
 {
-    const lv_font_t *font26 = ui_display_font_large();
-    const lv_font_t *font16 = ui_display_font_small();
+    const lv_font_t *font_title = ui_display_font_large();
+    const lv_font_t *font_body = ui_display_font_small();
 
-    if (!font26) {
-        ESP_LOGW(TAG, "Font 26 is not available (ui_display_font_large returned NULL)");
+    if (!font_title) {
+        ESP_LOGW(TAG, "Title font is not available (ui_display_font_large returned NULL)");
     }
-    if (!font16) {
-        ESP_LOGW(TAG, "Font 16 is not available (ui_display_font_small returned NULL)");
-    }
-
-    if (s_ui.song_title && font26) {
-        lv_obj_set_style_text_font(s_ui.song_title, font26, LV_PART_MAIN | LV_STATE_DEFAULT);
+    if (!font_body) {
+        ESP_LOGW(TAG, "Body font is not available (ui_display_font_small returned NULL)");
     }
 
-    if (font16) {
+    if (s_ui.song_title && font_title) {
+        lv_obj_set_style_text_font(s_ui.song_title, font_title, LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+
+    if (font_body) {
         if (s_ui.song_artist) {
-            lv_obj_set_style_text_font(s_ui.song_artist, font16, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(s_ui.song_artist, font_body, LV_PART_MAIN | LV_STATE_DEFAULT);
         }
         if (s_ui.next) {
-            lv_obj_set_style_text_font(s_ui.next, font16, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(s_ui.next, font_body, LV_PART_MAIN | LV_STATE_DEFAULT);
         }
         if (s_ui.next_song) {
-            lv_obj_set_style_text_font(s_ui.next_song, font16, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(s_ui.next_song, font_body, LV_PART_MAIN | LV_STATE_DEFAULT);
         }
     }
 }
@@ -219,8 +239,25 @@ static void build_next_song_string(char *out, size_t out_cap, const char *title,
 
     out[0] = '\0';
 
-    const bool has_title = (title && title[0] != '\0');
-    const bool has_artist = (artist && artist[0] != '\0');
+    bool has_title = false;
+    bool has_artist = false;
+
+    if (title) {
+        for (const char *p = title; *p; ++p) {
+            if (!isspace((unsigned char)*p)) {
+                has_title = true;
+                break;
+            }
+        }
+    }
+    if (artist) {
+        for (const char *p = artist; *p; ++p) {
+            if (!isspace((unsigned char)*p)) {
+                has_artist = true;
+                break;
+            }
+        }
+    }
 
     if (!has_title && !has_artist) {
         snprintf(out, out_cap, "-");
@@ -242,30 +279,256 @@ static void apply_play_state_image(bool is_playing)
 
 static void apply_shuffle_state_image(bool is_shuffle)
 {
-    set_image_by_name(s_ui.song_random, is_shuffle ? "shu_enable" : "shu_disenable");
+    set_image_by_name(s_ui.song_random, is_shuffle ? "Shuffle_enable" : "Shuffle_disable");
 }
 
 static void apply_repeat_state_image(ytmd_repeat_t repeat)
 {
-    const char *image_name = "repeat_disable";
+    const char *image_name = "Repeat_disable";
 
     if (repeat == YTMD_REPEAT_ALL) {
-        image_name = "repeat_all";
+        image_name = "Repeat_ALL_enable";
     } else if (repeat == YTMD_REPEAT_ONE) {
-        image_name = "repeat_one";
+        image_name = "Repeat_One_enable";
     }
 
     set_image_by_name(s_ui.song_repeat, image_name);
 }
 
+static ytmd_repeat_t next_repeat_state(ytmd_repeat_t current)
+{
+    if (current == YTMD_REPEAT_NONE) {
+        return YTMD_REPEAT_ALL;
+    }
+    if (current == YTMD_REPEAT_ALL) {
+        return YTMD_REPEAT_ONE;
+    }
+    return YTMD_REPEAT_NONE;
+}
+
 static void apply_like_state_image(bool is_liked)
 {
-    set_image_by_name(s_ui.song_like, is_liked ? "like_enable" : "like_disenable");
+    set_image_by_name(s_ui.song_like, is_liked ? "Thumb_Up_enable" : "Thumb_Up_disable");
 }
 
 static void apply_dislike_state_image(bool is_disliked)
 {
-    set_image_by_name(s_ui.song_senti, is_disliked ? "Sentiment Neutral_enable" : "Sentiment Neutral_disable");
+    set_image_by_name(s_ui.song_senti, is_disliked ? "Thumb_Down_enable" : "Thumb_Down_disable");
+}
+
+static void setup_album_art_background(void)
+{
+    if (!objects.main) {
+        return;
+    }
+
+    if (!s_album_bg) {
+        s_album_bg = lv_image_create(objects.main);
+        if (!s_album_bg) {
+            ESP_LOGW(TAG, "Failed to create album background layer");
+            return;
+        }
+
+        lv_obj_clear_flag(s_album_bg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_img_opa(s_album_bg, PLAYER_BG_ART_OPA, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_img_recolor(s_album_bg, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_img_recolor_opa(s_album_bg, PLAYER_BG_ART_RECOLOR_OPA, LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+
+    int screen_w = lv_obj_get_width(objects.main);
+    int screen_h = lv_obj_get_height(objects.main);
+    if (screen_w <= 0) {
+        screen_w = 800;
+    }
+    if (screen_h <= 0) {
+        screen_h = 480;
+    }
+
+    lv_obj_set_size(s_album_bg, UI_ALBUM_ART_W, UI_ALBUM_ART_H);
+    lv_obj_set_pos(s_album_bg,
+                   (screen_w - UI_ALBUM_ART_W) / 2,
+                   (screen_h - UI_ALBUM_ART_H) / 2);
+    lv_image_set_pivot(s_album_bg, UI_ALBUM_ART_W / 2, UI_ALBUM_ART_H / 2);
+
+    uint32_t scale_x = (uint32_t)((screen_w * 256 + UI_ALBUM_ART_W - 1) / UI_ALBUM_ART_W);
+    uint32_t scale_y = (uint32_t)((screen_h * 256 + UI_ALBUM_ART_H - 1) / UI_ALBUM_ART_H);
+    uint32_t scale = (scale_x > scale_y) ? scale_x : scale_y;
+    if (scale < LV_SCALE_NONE) {
+        scale = LV_SCALE_NONE;
+    }
+    lv_image_set_scale(s_album_bg, scale);
+
+    const lv_img_dsc_t *album_dsc = ui_display_get_album_dsc();
+    if (album_dsc) {
+        lv_img_set_src(s_album_bg, album_dsc);
+    }
+    lv_obj_move_to_index(s_album_bg, 0);
+}
+
+static void update_album_art_background(const lv_img_dsc_t *album_dsc)
+{
+    if (!s_album_bg || !album_dsc) {
+        return;
+    }
+    lv_img_set_src(s_album_bg, album_dsc);
+    lv_obj_invalidate(s_album_bg);
+}
+
+static bool has_visible_text(const char *text)
+{
+    if (!text) {
+        return false;
+    }
+
+    for (const char *p = text; *p; ++p) {
+        if (!isspace((unsigned char)*p)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int resolve_elapsed_seconds(const ytmd_player_state_t *state)
+{
+    if (!state) {
+        return -1;
+    }
+    if (state->has_elapsed_seconds) {
+        return state->elapsed_seconds;
+    }
+    if (state->has_seek_seconds) {
+        return state->seek_seconds;
+    }
+    return -1;
+}
+
+static bool is_track_changed_from_last(const ytmd_player_state_t *state)
+{
+    if (!state) {
+        return false;
+    }
+
+    const bool prev_has_track = has_visible_text(s_last_track_title) || has_visible_text(s_last_track_artist);
+    const bool cur_has_track = has_visible_text(state->title) || has_visible_text(state->artist);
+    if (!prev_has_track || !cur_has_track) {
+        return false;
+    }
+
+    return (strcmp(s_last_track_title, state->title) != 0) ||
+           (strcmp(s_last_track_artist, state->artist) != 0);
+}
+
+static void restore_skip_prev_image(void)
+{
+    set_image_by_name(s_ui.skip_prev, "skip_previous");
+    if (s_ui.skip_prev) {
+        lv_obj_invalidate(s_ui.skip_prev);
+    }
+    s_skip_prev_feedback_pending = false;
+    s_skip_prev_press_seek_seconds = -1;
+    s_skip_prev_press_tick = 0;
+}
+
+static void restore_skip_next_image(void)
+{
+    set_image_by_name(s_ui.skip_next, "skip_next_");
+    if (s_ui.skip_next) {
+        lv_obj_invalidate(s_ui.skip_next);
+    }
+    s_skip_next_feedback_pending = false;
+    s_skip_next_press_seek_seconds = -1;
+    s_skip_next_press_tick = 0;
+}
+
+static void begin_skip_prev_feedback(void)
+{
+    s_skip_prev_feedback_pending = true;
+    s_skip_prev_press_seek_seconds = s_latest_elapsed_seconds;
+    s_skip_prev_press_tick = lv_tick_get();
+    set_image_by_name(s_ui.skip_prev, "skip_previous_push");
+    if (s_ui.skip_prev) {
+        lv_obj_invalidate(s_ui.skip_prev);
+    }
+}
+
+static void begin_skip_next_feedback(void)
+{
+    s_skip_next_feedback_pending = true;
+    s_skip_next_press_seek_seconds = s_latest_elapsed_seconds;
+    s_skip_next_press_tick = lv_tick_get();
+    set_image_by_name(s_ui.skip_next, "skip_next_push");
+    if (s_ui.skip_next) {
+        lv_obj_invalidate(s_ui.skip_next);
+    }
+}
+
+static void update_skip_feedback(const ytmd_player_state_t *state)
+{
+    if (!state) {
+        return;
+    }
+
+    const bool track_changed = is_track_changed_from_last(state);
+    const int elapsed_seconds = resolve_elapsed_seconds(state);
+    const uint32_t now = lv_tick_get();
+
+    if (s_skip_next_feedback_pending) {
+        bool done = false;
+        if (track_changed) {
+            done = true;
+        } else if (s_skip_next_press_seek_seconds >= 0 &&
+                   elapsed_seconds >= 0 &&
+                   elapsed_seconds + 2 < s_skip_next_press_seek_seconds) {
+            done = true;
+        } else if ((now - s_skip_next_press_tick) >= PLAYER_SKIP_PUSH_TIMEOUT_MS) {
+            done = true;
+        }
+        if (done) {
+            restore_skip_next_image();
+        }
+    }
+
+    if (s_skip_prev_feedback_pending) {
+        bool done = false;
+        if (track_changed) {
+            done = true;
+        } else if (s_skip_prev_press_seek_seconds >= 0 && elapsed_seconds >= 0) {
+            const bool rewound_to_head = (elapsed_seconds <= 1) &&
+                                         (elapsed_seconds + 2 < s_skip_prev_press_seek_seconds);
+            if (s_skip_prev_press_seek_seconds >= PLAYER_PREV_REWIND_THRESHOLD_SEC) {
+                done = rewound_to_head;
+            } else if (rewound_to_head) {
+                done = true;
+            }
+        }
+
+        if (!done && (now - s_skip_prev_press_tick) >= PLAYER_SKIP_PUSH_TIMEOUT_MS) {
+            done = true;
+        }
+        if (done) {
+            restore_skip_prev_image();
+        }
+    }
+}
+
+static void commit_track_snapshot(const ytmd_player_state_t *state)
+{
+    if (!state) {
+        return;
+    }
+
+    snprintf(s_last_track_title, sizeof(s_last_track_title), "%s", state->title);
+    snprintf(s_last_track_artist, sizeof(s_last_track_artist), "%s", state->artist);
+    s_latest_elapsed_seconds = resolve_elapsed_seconds(state);
+}
+
+static void setup_album_art_round_mask(void)
+{
+    if (!s_ui.album_art) {
+        return;
+    }
+    lv_obj_set_style_radius(s_ui.album_art, PLAYER_ALBUM_ART_RADIUS, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_clip_corner(s_ui.album_art, true, LV_PART_MAIN | LV_STATE_DEFAULT);
 }
 
 static void dispatch_control(void (*registered_cb)(void *), void (*fallback_cb)(void))
@@ -298,11 +561,41 @@ void player_ui_control_next(void)
 void player_ui_control_toggle_shuffle(void)
 {
     dispatch_control(s_control_ops.toggle_shuffle, ytmd_cmd_toggle_shuffle);
+
+    // Optimistic UI update: shuffle state endpoint may lag behind command response.
+    if (!s_shuffle_ui_state_valid) {
+        s_shuffle_ui_state = false;
+        s_shuffle_ui_state_valid = true;
+    }
+    s_shuffle_ui_state = !s_shuffle_ui_state;
+
+    if (bsp_display_lock(0)) {
+        apply_shuffle_state_image(s_shuffle_ui_state);
+        if (s_ui.song_random) {
+            lv_obj_invalidate(s_ui.song_random);
+        }
+        bsp_display_unlock();
+    }
 }
 
 void player_ui_control_cycle_repeat(void)
 {
     dispatch_control(s_control_ops.cycle_repeat, ytmd_cmd_cycle_repeat);
+
+    // Optimistic UI update: /song response may not immediately include repeat state.
+    if (!s_repeat_ui_state_valid) {
+        s_repeat_ui_state = YTMD_REPEAT_NONE;
+        s_repeat_ui_state_valid = true;
+    }
+    s_repeat_ui_state = next_repeat_state(s_repeat_ui_state);
+
+    if (bsp_display_lock(0)) {
+        apply_repeat_state_image(s_repeat_ui_state);
+        if (s_ui.song_repeat) {
+            lv_obj_invalidate(s_ui.song_repeat);
+        }
+        bsp_display_unlock();
+    }
 }
 
 void player_ui_control_toggle_like(void)
@@ -324,12 +617,14 @@ static void on_play_clicked(lv_event_t *e)
 static void on_skip_prev_clicked(lv_event_t *e)
 {
     (void)e;
+    begin_skip_prev_feedback();
     player_ui_control_prev();
 }
 
 static void on_skip_next_clicked(lv_event_t *e)
 {
     (void)e;
+    begin_skip_next_feedback();
     player_ui_control_next();
 }
 
@@ -399,6 +694,8 @@ void player_ui_init(void)
     ui_init();
 
     bind_ui_objects_by_name();
+    setup_album_art_background();
+    setup_album_art_round_mask();
     apply_player_fonts();
     bind_player_events();
 
@@ -431,6 +728,7 @@ void player_ui_update_album_art(void)
 
     lv_img_set_src(s_ui.album_art, album_dsc);
     lv_obj_invalidate(s_ui.album_art);
+    update_album_art_background(album_dsc);
 
     bsp_display_unlock();
 }
@@ -459,10 +757,15 @@ void player_ui_update(const ytmd_player_state_t *state)
     }
 
     apply_play_state_image(state->is_playing);
+    s_shuffle_ui_state = state->is_shuffle;
+    s_shuffle_ui_state_valid = true;
     apply_shuffle_state_image(state->is_shuffle);
+    s_repeat_ui_state = state->repeat;
+    s_repeat_ui_state_valid = true;
     apply_repeat_state_image(state->repeat);
     apply_like_state_image(state->is_liked);
     apply_dislike_state_image(state->is_disliked);
+    update_skip_feedback(state);
 
     if (s_ui.next) {
         lv_label_set_text(s_ui.next, PLAYER_NEXT_LABEL_TEXT);
@@ -477,6 +780,11 @@ void player_ui_update(const ytmd_player_state_t *state)
     if (s_ui.album_art && state->album_art_dsc) {
         lv_img_set_src(s_ui.album_art, state->album_art_dsc);
     }
+    if (state->album_art_dsc) {
+        update_album_art_background(state->album_art_dsc);
+    }
+
+    commit_track_snapshot(state);
 
     bsp_display_unlock();
 }

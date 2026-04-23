@@ -60,8 +60,18 @@ static bool apply_playback_state_to_player(const ytmd_client_playback_state_t *p
 
     bool changed = false;
 
-    if (playback->has_playing && s_player_state.is_playing != playback->is_playing) {
-        s_player_state.is_playing = playback->is_playing;
+    bool has_play_state = false;
+    bool new_is_playing = s_player_state.is_playing;
+    if (playback->has_playing) {
+        has_play_state = true;
+        new_is_playing = playback->is_playing;
+    }
+    if (playback->has_paused) {
+        has_play_state = true;
+        new_is_playing = !playback->is_paused;
+    }
+    if (has_play_state && s_player_state.is_playing != new_is_playing) {
+        s_player_state.is_playing = new_is_playing;
         changed = true;
     }
     if (playback->has_shuffle && s_player_state.is_shuffle != playback->is_shuffle) {
@@ -91,6 +101,27 @@ static bool apply_playback_state_to_player(const ytmd_client_playback_state_t *p
     if (playback->has_next_song) {
         changed |= update_text_field(s_player_state.next_title, sizeof(s_player_state.next_title), playback->next_title);
         changed |= update_text_field(s_player_state.next_artist, sizeof(s_player_state.next_artist), playback->next_artist);
+    }
+    if (playback->has_seek_seconds) {
+        if (!s_player_state.has_seek_seconds || s_player_state.seek_seconds != playback->seek_seconds) {
+            changed = true;
+        }
+        s_player_state.has_seek_seconds = true;
+        s_player_state.seek_seconds = playback->seek_seconds;
+    }
+    if (playback->has_elapsed_seconds) {
+        if (!s_player_state.has_elapsed_seconds || s_player_state.elapsed_seconds != playback->elapsed_seconds) {
+            changed = true;
+        }
+        s_player_state.has_elapsed_seconds = true;
+        s_player_state.elapsed_seconds = playback->elapsed_seconds;
+    }
+    if (playback->has_song_duration_seconds) {
+        if (!s_player_state.has_song_duration_seconds || s_player_state.song_duration_seconds != playback->song_duration_seconds) {
+            changed = true;
+        }
+        s_player_state.has_song_duration_seconds = true;
+        s_player_state.song_duration_seconds = playback->song_duration_seconds;
     }
 
     return changed;
@@ -274,13 +305,16 @@ static void album_task(void *arg)
             ESP_LOGI(TAG, "Now playing: %s - %s",
                      s_player_state.title[0] ? s_player_state.title : "-",
                      s_player_state.artist[0] ? s_player_state.artist : "-");
-        } else if (err == ESP_ERR_NOT_FOUND && (text_changed || playback_changed)) {
-            player_ui_update(&s_player_state);
-            ESP_LOGI(TAG, "Playback state updated: %s - %s",
-                     s_player_state.title[0] ? s_player_state.title : "-",
-                     s_player_state.artist[0] ? s_player_state.artist : "-");
-        } else if (err != ESP_ERR_NOT_FOUND) {
-            ESP_LOGW(TAG, "Album art poll failed: %s", esp_err_to_name(err));
+        } else {
+            if (text_changed || playback_changed) {
+                player_ui_update(&s_player_state);
+                // ESP_LOGI(TAG, "Playback state updated: %s - %s",
+                //          s_player_state.title[0] ? s_player_state.title : "-",
+                //          s_player_state.artist[0] ? s_player_state.artist : "-");
+            }
+            if (err != ESP_ERR_NOT_FOUND) {
+                ESP_LOGW(TAG, "Album art poll failed: %s", esp_err_to_name(err));
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(YTMD_POLL_INTERVAL_MS));
@@ -313,3 +347,4 @@ void app_main(void)
     }
 #endif
 }
+

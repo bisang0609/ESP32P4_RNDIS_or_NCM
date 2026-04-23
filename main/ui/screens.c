@@ -117,37 +117,37 @@ void create_screen_main() {
             // song_random
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_random = obj;
-            lv_obj_set_pos(obj, 474, 314);
+            lv_obj_set_pos(obj, 452, 302);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_image_set_src(obj, &img_shu_disenable);
-            lv_image_set_scale(obj, 120);
+            lv_image_set_src(obj, &img_shuffle_disable);
+            lv_image_set_scale(obj, 100);
         }
         {
             // song_repeat
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_repeat = obj;
-            lv_obj_set_pos(obj, 553, 314);
+            lv_obj_set_pos(obj, 531, 302);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_repeat_disable);
-            lv_image_set_scale(obj, 120);
+            lv_image_set_scale(obj, 100);
         }
         {
             // song_senti
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_senti = obj;
-            lv_obj_set_pos(obj, 710, 314);
+            lv_obj_set_pos(obj, 611, 302);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_image_set_src(obj, &img_sentiment_neutral_disable);
-            lv_image_set_scale(obj, 150);
+            lv_image_set_src(obj, &img_thumb_down_disable);
+            lv_image_set_scale(obj, 100);
         }
         {
             // song_like
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_like = obj;
-            lv_obj_set_pos(obj, 631, 314);
+            lv_obj_set_pos(obj, 690, 302);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_image_set_src(obj, &img_like_disenable);
-            lv_image_set_scale(obj, 150);
+            lv_image_set_src(obj, &img_thumb_up_disable);
+            lv_image_set_scale(obj, 100);
         }
         {
             lv_obj_t *obj = lv_label_create(parent_obj);
@@ -172,7 +172,7 @@ void create_screen_main() {
             objects.next_song = obj;
             lv_obj_set_pos(obj, 507, 410);
             lv_obj_set_size(obj, 248, 40);
-            lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL);
+            lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL_CIRCULAR);
             lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_anim(obj, get_anim(), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);

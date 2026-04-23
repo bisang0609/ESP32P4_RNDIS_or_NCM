@@ -33,6 +33,15 @@ typedef struct {
 
     char next_title[PLAYER_TITLE_MAX_LEN];
     char next_artist[PLAYER_ARTIST_MAX_LEN];
+
+    bool has_seek_seconds;
+    int seek_seconds;
+
+    bool has_elapsed_seconds;
+    int elapsed_seconds;
+
+    bool has_song_duration_seconds;
+    int song_duration_seconds;
 } ytmd_player_state_t;
 
 typedef struct {

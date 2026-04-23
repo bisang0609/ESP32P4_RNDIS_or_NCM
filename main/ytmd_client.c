@@ -1,10 +1,14 @@
 #include "ytmd_client.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "esp_check.h"
 #include "esp_crt_bundle.h"
@@ -20,21 +24,94 @@ static const char *TAG = "USB_NCM_YTMD_ART";
 #define YTMD_URL_API_SONG    YTMD_API_BASE "/api/v1/song"
 #define YTMD_URL_API_QUEUE   YTMD_API_BASE "/api/v1/queue"
 #define YTMD_URL_API_QUEUE_NEXT YTMD_API_BASE "/api/v1/queue/next"
+#define YTMD_URL_API_LIKE_STATE YTMD_API_BASE "/api/v1/like-state"
+#define YTMD_URL_API_REPEAT_MODE YTMD_API_BASE "/api/v1/repeat-mode"
+#define YTMD_URL_API_SHUFFLE YTMD_API_BASE "/api/v1/shuffle"
 #define HTTP_TIMEOUT_MS      12000
 #define HTTP_CMD_TIMEOUT_MS  3000
+#define HTTP_STATE_TIMEOUT_MS 2000
 #define HTTP_QUEUE_TIMEOUT_MS 2500
 #define MAX_SONG_JSON_BYTES  (256 * 1024)
-#define MAX_QUEUE_JSON_BYTES (512 * 1024)
+#define MAX_QUEUE_JSON_BYTES (3 * 1024 * 1024)
 #define MAX_QUEUE_NEXT_JSON_BYTES (32 * 1024)
+#define MAX_STATE_JSON_BYTES (8 * 1024)
 #define MAX_IMAGE_BYTES      (3 * 1024 * 1024)
+#define YTMD_QUEUE_CACHE_CAPACITY 1024
+#define YTMD_ART_CACHE_CAPACITY 5
+#define YTMD_ART_WINDOW_RADIUS 2
 
 #define ART_SRC_REQ_W        400
 #define ART_SRC_REQ_H        400
 #define YTIMG_FALLBACK_FILE  "sddefault.jpg"
 
 static jpeg_decoder_handle_t s_jpeg_decoder = NULL;
-static bool s_queue_next_supported = true;
+// Current backend does not expose /api/v1/queue/next reliably.
+// Keep disabled by default and use /api/v1/queue parsing path.
+static bool s_queue_next_supported = false;
 static bool s_queue_fallback_enabled = true;
+static ytmd_client_queue_item_t *s_queue_cache_items = NULL;
+static size_t s_queue_cache_count = 0;
+static int s_queue_cache_selected_pos = -1;
+static SemaphoreHandle_t s_queue_cache_mutex = NULL;
+static char s_last_logged_next_title[256] = {0};
+static char s_last_logged_next_artist[128] = {0};
+
+typedef struct {
+    bool valid;
+    int width;
+    int height;
+    size_t bytes;
+    uint32_t lru_tick;
+    char key[YTMD_ART_URL_MAX_LEN];
+    uint16_t *pixels;
+} ytmd_art_cache_entry_t;
+
+static ytmd_art_cache_entry_t s_art_cache[YTMD_ART_CACHE_CAPACITY] = {0};
+
+static esp_err_t http_get_alloc(const char *url,
+                                size_t max_size,
+                                int timeout_ms,
+                                bool text_mode,
+                                ytmd_network_diag_cb_t net_diag_cb,
+                                int *out_status,
+                                bool *out_too_large,
+                                uint8_t **out_buf,
+                                size_t *out_len);
+static bool extract_next_song_from_queue_json(const uint8_t *json_data,
+                                              size_t json_len,
+                                              char *out_title,
+                                              size_t out_title_cap,
+                                              char *out_artist,
+                                              size_t out_artist_cap);
+static bool extract_next_song_from_queue_next_json(const uint8_t *json_data,
+                                                   size_t json_len,
+                                                   char *out_title,
+                                                   size_t out_title_cap,
+                                                   char *out_artist,
+                                                   size_t out_artist_cap);
+static bool queue_cache_lock(TickType_t timeout_ticks);
+static void queue_cache_unlock(void);
+static bool ensure_queue_cache_alloc(void);
+static bool art_cache_copy_to_dst(const char *key, int dst_w, int dst_h, uint16_t *dst_rgb565);
+static bool art_cache_store_from_src(const char *key, int src_w, int src_h, const uint16_t *src_rgb565);
+static void prefetch_art_window_from_queue(const char *current_cache_key,
+                                           int dst_w,
+                                           int dst_h,
+                                           ytmd_network_diag_cb_t net_diag_cb);
+static bool decode_jpeg_rgb565(const uint8_t *jpg,
+                               size_t jpg_len,
+                               uint16_t **out_buf,
+                               int *out_w,
+                               int *out_h,
+                               int *out_stride);
+static void scale_crop_zoom_rgb565(const uint16_t *src,
+                                   int src_w,
+                                   int src_h,
+                                   int src_stride,
+                                   uint16_t *dst,
+                                   int dst_w,
+                                   int dst_h,
+                                   int zoom_percent);
 
 static void append_cstr(char *dst, size_t cap, const char *suffix)
 {
@@ -680,6 +757,9 @@ static void init_playback_state(ytmd_client_playback_state_t *state)
 
     memset(state, 0, sizeof(*state));
     state->repeat = YTMD_CLIENT_REPEAT_NONE;
+    state->seek_seconds = -1;
+    state->elapsed_seconds = -1;
+    state->song_duration_seconds = -1;
 }
 
 static void copy_string_field(char *dst, size_t dst_cap, const char *src)
@@ -692,6 +772,379 @@ static void copy_string_field(char *dst, size_t dst_cap, const char *src)
         return;
     }
     snprintf(dst, dst_cap, "%s", src);
+}
+
+static bool queue_cache_lock(TickType_t timeout_ticks)
+{
+    if (!s_queue_cache_mutex) {
+        s_queue_cache_mutex = xSemaphoreCreateMutex();
+        if (!s_queue_cache_mutex) {
+            return false;
+        }
+    }
+    return xSemaphoreTake(s_queue_cache_mutex, timeout_ticks) == pdTRUE;
+}
+
+static void queue_cache_unlock(void)
+{
+    if (s_queue_cache_mutex) {
+        xSemaphoreGive(s_queue_cache_mutex);
+    }
+}
+
+static bool ensure_queue_cache_alloc(void)
+{
+    if (s_queue_cache_items) {
+        return true;
+    }
+
+    s_queue_cache_items = (ytmd_client_queue_item_t *)heap_caps_calloc(
+        YTMD_QUEUE_CACHE_CAPACITY,
+        sizeof(ytmd_client_queue_item_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_queue_cache_items) {
+        s_queue_cache_items = (ytmd_client_queue_item_t *)calloc(
+            YTMD_QUEUE_CACHE_CAPACITY, sizeof(ytmd_client_queue_item_t));
+    }
+    if (!s_queue_cache_items) {
+        ESP_LOGW(TAG, "QUEUE CACHE: alloc failed (%u items)", (unsigned)YTMD_QUEUE_CACHE_CAPACITY);
+        return false;
+    }
+    return true;
+}
+
+static void log_next_track_if_changed(const char *source, const char *title, const char *artist)
+{
+    const char *t = title ? title : "";
+    const char *a = artist ? artist : "";
+    if (strncmp(s_last_logged_next_title, t, sizeof(s_last_logged_next_title) - 1) == 0 &&
+        strncmp(s_last_logged_next_artist, a, sizeof(s_last_logged_next_artist) - 1) == 0) {
+        return;
+    }
+
+    copy_string_field(s_last_logged_next_title, sizeof(s_last_logged_next_title), t);
+    copy_string_field(s_last_logged_next_artist, sizeof(s_last_logged_next_artist), a);
+
+    ESP_LOGI(TAG, "NEXT: parsed from %s => '%s - %s'",
+             source ? source : "queue",
+             t[0] ? t : "-",
+             a[0] ? a : "-");
+}
+
+static uint32_t art_cache_now_tick(void)
+{
+    return (uint32_t)xTaskGetTickCount();
+}
+
+static bool art_cache_ensure_entry_buffer(ytmd_art_cache_entry_t *entry, size_t bytes)
+{
+    if (!entry || bytes == 0) {
+        return false;
+    }
+
+    if (entry->pixels && entry->bytes == bytes) {
+        return true;
+    }
+
+    free(entry->pixels);
+    entry->pixels = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!entry->pixels) {
+        entry->pixels = (uint16_t *)malloc(bytes);
+    }
+    if (!entry->pixels) {
+        entry->bytes = 0;
+        return false;
+    }
+
+    entry->bytes = bytes;
+    return true;
+}
+
+static int art_cache_find_index(const char *key, int w, int h)
+{
+    if (!key || key[0] == '\0' || w <= 0 || h <= 0) {
+        return -1;
+    }
+
+    for (int i = 0; i < YTMD_ART_CACHE_CAPACITY; ++i) {
+        ytmd_art_cache_entry_t *entry = &s_art_cache[i];
+        if (!entry->valid || !entry->pixels) {
+            continue;
+        }
+        if (entry->width == w &&
+            entry->height == h &&
+            strncmp(entry->key, key, sizeof(entry->key) - 1) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int art_cache_pick_victim_index(void)
+{
+    for (int i = 0; i < YTMD_ART_CACHE_CAPACITY; ++i) {
+        if (!s_art_cache[i].valid) {
+            return i;
+        }
+    }
+
+    int victim = 0;
+    uint32_t oldest = s_art_cache[0].lru_tick;
+    for (int i = 1; i < YTMD_ART_CACHE_CAPACITY; ++i) {
+        if (s_art_cache[i].lru_tick < oldest) {
+            oldest = s_art_cache[i].lru_tick;
+            victim = i;
+        }
+    }
+    return victim;
+}
+
+static bool art_cache_has_key(const char *key, int w, int h)
+{
+    return art_cache_find_index(key, w, h) >= 0;
+}
+
+static bool art_cache_copy_to_dst(const char *key, int dst_w, int dst_h, uint16_t *dst_rgb565)
+{
+    if (!key || !dst_rgb565 || dst_w <= 0 || dst_h <= 0) {
+        return false;
+    }
+
+    int idx = art_cache_find_index(key, dst_w, dst_h);
+    if (idx < 0) {
+        return false;
+    }
+
+    ytmd_art_cache_entry_t *entry = &s_art_cache[idx];
+    size_t bytes = (size_t)dst_w * (size_t)dst_h * 2u;
+    if (!entry->pixels || entry->bytes < bytes) {
+        return false;
+    }
+
+    memcpy(dst_rgb565, entry->pixels, bytes);
+    entry->lru_tick = art_cache_now_tick();
+    ESP_LOGD(TAG, "ART CACHE: hit key=%s", key);
+    return true;
+}
+
+static bool art_cache_store_from_src(const char *key, int src_w, int src_h, const uint16_t *src_rgb565)
+{
+    if (!key || key[0] == '\0' || !src_rgb565 || src_w <= 0 || src_h <= 0) {
+        return false;
+    }
+
+    size_t bytes = (size_t)src_w * (size_t)src_h * 2u;
+    int idx = art_cache_find_index(key, src_w, src_h);
+    if (idx < 0) {
+        idx = art_cache_pick_victim_index();
+    }
+
+    ytmd_art_cache_entry_t *entry = &s_art_cache[idx];
+    if (!art_cache_ensure_entry_buffer(entry, bytes)) {
+        return false;
+    }
+
+    memcpy(entry->pixels, src_rgb565, bytes);
+    entry->valid = true;
+    entry->width = src_w;
+    entry->height = src_h;
+    entry->lru_tick = art_cache_now_tick();
+    snprintf(entry->key, sizeof(entry->key), "%s", key);
+    return true;
+}
+
+static esp_err_t download_decode_art_to_rgb565(const char *art_url,
+                                               int dst_w,
+                                               int dst_h,
+                                               uint16_t *dst_rgb565,
+                                               ytmd_network_diag_cb_t net_diag_cb)
+{
+    if (!art_url || art_url[0] == '\0' || dst_w <= 0 || dst_h <= 0 || !dst_rgb565) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint8_t *img = NULL;
+    size_t img_len = 0;
+    esp_err_t err = http_get_alloc(art_url, MAX_IMAGE_BYTES, HTTP_TIMEOUT_MS, false, net_diag_cb, NULL, NULL, &img, &img_len);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (!is_jpeg_data(img, img_len)) {
+        free(img);
+        return ESP_FAIL;
+    }
+
+    uint16_t *decoded = NULL;
+    int w = 0;
+    int h = 0;
+    int stride = 0;
+    bool ok = decode_jpeg_rgb565(img, img_len, &decoded, &w, &h, &stride);
+    free(img);
+    if (!ok || !decoded) {
+        free(decoded);
+        return ESP_FAIL;
+    }
+
+    int crop_zoom_percent = 100;
+    if (dst_w == dst_h && w > 0 && h > 0) {
+        int max_dim = (w > h) ? w : h;
+        int min_dim = (w > h) ? h : w;
+        // Non-square thumbnails (e.g., 16:9) look too small in square art slots.
+        // Match main fetch-path behavior by adding center zoom.
+        if ((int64_t)max_dim * 10 >= (int64_t)min_dim * 12) {
+            crop_zoom_percent = 145;
+        }
+    }
+
+    scale_crop_zoom_rgb565(decoded, w, h, stride, dst_rgb565, dst_w, dst_h, crop_zoom_percent);
+    free(decoded);
+    return ESP_OK;
+}
+
+static void prefetch_art_window_from_queue(const char *current_cache_key,
+                                           int dst_w,
+                                           int dst_h,
+                                           ytmd_network_diag_cb_t net_diag_cb)
+{
+    if (dst_w <= 0 || dst_h <= 0) {
+        return;
+    }
+
+    uint8_t *queue_json = NULL;
+    size_t queue_json_len = 0;
+    bool queue_too_large = false;
+    esp_err_t err = http_get_alloc(YTMD_URL_API_QUEUE,
+                                   MAX_QUEUE_JSON_BYTES,
+                                   HTTP_QUEUE_TIMEOUT_MS,
+                                   true,
+                                   net_diag_cb,
+                                   NULL,
+                                   &queue_too_large,
+                                   &queue_json,
+                                   &queue_json_len);
+    if (err != ESP_OK || !queue_json || queue_json_len == 0) {
+        free(queue_json);
+        if (queue_too_large) {
+            ESP_LOGW(TAG, "ART CACHE: skip prefetch, queue payload exceeded %u bytes", (unsigned)MAX_QUEUE_JSON_BYTES);
+        }
+        return;
+    }
+
+    char dummy_title[4] = {0};
+    char dummy_artist[4] = {0};
+    (void)extract_next_song_from_queue_json(queue_json, queue_json_len, dummy_title, sizeof(dummy_title), dummy_artist, sizeof(dummy_artist));
+    free(queue_json);
+
+    typedef struct {
+        char key[YTMD_ART_URL_MAX_LEN];
+        char url[YTMD_ART_URL_MAX_LEN];
+    } prefetch_item_t;
+
+    prefetch_item_t *targets = (prefetch_item_t *)heap_caps_calloc(
+        YTMD_ART_CACHE_CAPACITY, sizeof(prefetch_item_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!targets) {
+        targets = (prefetch_item_t *)calloc(YTMD_ART_CACHE_CAPACITY, sizeof(prefetch_item_t));
+    }
+    if (!targets) {
+        ESP_LOGW(TAG, "ART CACHE: prefetch target alloc failed");
+        return;
+    }
+
+    size_t target_count = 0;
+    bool cache_locked = false;
+
+    if (!queue_cache_lock(pdMS_TO_TICKS(50))) {
+        free(targets);
+        return;
+    }
+    cache_locked = true;
+
+    if (!s_queue_cache_items || s_queue_cache_count == 0 || s_queue_cache_selected_pos < 0) {
+        if (cache_locked) {
+            queue_cache_unlock();
+        }
+        free(targets);
+        return;
+    }
+
+    for (int rel = -YTMD_ART_WINDOW_RADIUS; rel <= YTMD_ART_WINDOW_RADIUS; ++rel) {
+        int idx = s_queue_cache_selected_pos + rel;
+        if (idx < 0 || (size_t)idx >= s_queue_cache_count) {
+            continue;
+        }
+
+        const ytmd_client_queue_item_t *item = &s_queue_cache_items[idx];
+        char prefetch_url[YTMD_ART_URL_MAX_LEN] = {0};
+        char prefetch_key[YTMD_ART_URL_MAX_LEN] = {0};
+
+        if (item->video_id[0] != '\0') {
+            if (!make_ytimg_fallback_url(item->video_id, prefetch_url, sizeof(prefetch_url))) {
+                continue;
+            }
+            build_art_cache_key(prefetch_url, item->video_id, prefetch_key, sizeof(prefetch_key));
+        } else if (item->art_url[0] != '\0') {
+            snprintf(prefetch_url, sizeof(prefetch_url), "%s", item->art_url);
+            build_art_cache_key(prefetch_url, NULL, prefetch_key, sizeof(prefetch_key));
+        } else {
+            continue;
+        }
+
+        if (prefetch_key[0] == '\0' || prefetch_url[0] == '\0') {
+            continue;
+        }
+        if (current_cache_key && strncmp(current_cache_key, prefetch_key, sizeof(prefetch_key) - 1) == 0) {
+            continue;
+        }
+
+        bool duplicate = false;
+        for (size_t i = 0; i < target_count; ++i) {
+            if (strncmp(targets[i].key, prefetch_key, sizeof(targets[i].key) - 1) == 0) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate || target_count >= YTMD_ART_CACHE_CAPACITY) {
+            continue;
+        }
+
+        snprintf(targets[target_count].key, sizeof(targets[target_count].key), "%s", prefetch_key);
+        snprintf(targets[target_count].url, sizeof(targets[target_count].url), "%s", prefetch_url);
+        target_count++;
+    }
+
+    if (cache_locked) {
+        queue_cache_unlock();
+    }
+
+    if (target_count == 0) {
+        free(targets);
+        return;
+    }
+
+    size_t frame_bytes = (size_t)dst_w * (size_t)dst_h * 2u;
+    uint16_t *tmp = (uint16_t *)heap_caps_malloc(frame_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!tmp) {
+        tmp = (uint16_t *)malloc(frame_bytes);
+    }
+    if (!tmp) {
+        free(targets);
+        return;
+    }
+
+    for (size_t i = 0; i < target_count; ++i) {
+        if (art_cache_has_key(targets[i].key, dst_w, dst_h)) {
+            continue;
+        }
+
+        esp_err_t pf_err = download_decode_art_to_rgb565(targets[i].url, dst_w, dst_h, tmp, net_diag_cb);
+        if (pf_err == ESP_OK) {
+            (void)art_cache_store_from_src(targets[i].key, dst_w, dst_h, tmp);
+        }
+    }
+
+    free(tmp);
+    free(targets);
 }
 
 static bool extract_json_bool_after_key(const char *json, const char *key_token, bool *out_value)
@@ -777,6 +1230,94 @@ static bool extract_json_int_after_key(const char *json, const char *key_token, 
     return false;
 }
 
+static const char *skip_json_ws(const char *s)
+{
+    if (!s) {
+        return NULL;
+    }
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') {
+        s++;
+    }
+    return s;
+}
+
+static bool extract_top_level_token(const char *json, char *out, size_t out_cap)
+{
+    if (!json || !out || out_cap == 0) {
+        return false;
+    }
+
+    out[0] = '\0';
+    const char *p = skip_json_ws(json);
+    if (!p || p[0] == '\0') {
+        return false;
+    }
+
+    size_t n = 0;
+    if (*p == '"') {
+        p++;
+        while (*p && *p != '"' && n + 1 < out_cap) {
+            out[n++] = (char)tolower((unsigned char)*p++);
+        }
+    } else {
+        while (*p && *p != ',' && *p != '}' && *p != ']' &&
+               *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n' &&
+               n + 1 < out_cap) {
+            out[n++] = (char)tolower((unsigned char)*p++);
+        }
+    }
+    out[n] = '\0';
+    return n > 0;
+}
+
+static bool parse_bool_token(const char *token, bool *out_value)
+{
+    if (!token || !out_value) {
+        return false;
+    }
+
+    if (strcmp(token, "1") == 0 || strcmp(token, "true") == 0 ||
+        strcmp(token, "on") == 0 || strstr(token, "enable") != NULL ||
+        strcmp(token, "active") == 0) {
+        *out_value = true;
+        return true;
+    }
+    if (strcmp(token, "0") == 0 || strcmp(token, "false") == 0 ||
+        strcmp(token, "off") == 0 || strstr(token, "disable") != NULL ||
+        strcmp(token, "inactive") == 0 || strcmp(token, "none") == 0) {
+        *out_value = false;
+        return true;
+    }
+    return false;
+}
+
+static bool parse_top_level_bool(const char *json, bool *out_value)
+{
+    char token[32] = {0};
+    if (!extract_top_level_token(json, token, sizeof(token))) {
+        return false;
+    }
+    return parse_bool_token(token, out_value);
+}
+
+static bool parse_top_level_int(const char *json, int *out_value)
+{
+    if (!json || !out_value) {
+        return false;
+    }
+    const char *p = skip_json_ws(json);
+    if (!p || p[0] == '\0') {
+        return false;
+    }
+    char *end_ptr = NULL;
+    long v = strtol(p, &end_ptr, 10);
+    if (end_ptr == p) {
+        return false;
+    }
+    *out_value = (int)v;
+    return true;
+}
+
 static void parse_repeat_mode(const char *repeat_str, ytmd_client_repeat_t *out_repeat)
 {
     if (!repeat_str || !out_repeat) {
@@ -799,6 +1340,419 @@ static void parse_repeat_mode(const char *repeat_str, ytmd_client_repeat_t *out_
     } else {
         *out_repeat = YTMD_CLIENT_REPEAT_NONE;
     }
+}
+
+static void map_repeat_int_mode(int repeat_int, ytmd_client_repeat_t *out_repeat)
+{
+    if (!out_repeat) {
+        return;
+    }
+    if (repeat_int == 1) {
+        *out_repeat = YTMD_CLIENT_REPEAT_ALL;
+    } else if (repeat_int == 2) {
+        *out_repeat = YTMD_CLIENT_REPEAT_ONE;
+    } else {
+        *out_repeat = YTMD_CLIENT_REPEAT_NONE;
+    }
+}
+
+static bool parse_shuffle_state_from_json(const char *json, bool *out_shuffle)
+{
+    if (!json || !out_shuffle) {
+        return false;
+    }
+
+    bool v = false;
+    if (extract_json_bool_after_key(json, "\"shuffleEnabled\"", &v) ||
+        extract_json_bool_after_key(json, "\"shuffleMode\"", &v) ||
+        extract_json_bool_after_key(json, "\"isShuffle\"", &v) ||
+        extract_json_bool_after_key(json, "\"shuffle\"", &v) ||
+        extract_json_bool_after_key(json, "\"enabled\"", &v) ||
+        parse_top_level_bool(json, &v)) {
+        *out_shuffle = v;
+        return true;
+    }
+
+    int mode = 0;
+    if (extract_json_int_after_key(json, "\"shuffleMode\"", &mode) ||
+        extract_json_int_after_key(json, "\"shuffle\"", &mode) ||
+        extract_json_int_after_key(json, "\"enabled\"", &mode) ||
+        parse_top_level_int(json, &mode)) {
+        *out_shuffle = (mode != 0);
+        return true;
+    }
+
+    char *shuffle_state = extract_quoted_json_string_after_key(json, "\"shuffleMode\"", false);
+    if (!shuffle_state) {
+        shuffle_state = extract_quoted_json_string_after_key(json, "\"shuffle\"", false);
+    }
+    if (!shuffle_state) {
+        shuffle_state = extract_quoted_json_string_after_key(json, "\"state\"", false);
+    }
+    if (!shuffle_state) {
+        shuffle_state = extract_quoted_json_string_after_key(json, "\"value\"", false);
+    }
+
+    if (shuffle_state) {
+        char lowered[32] = {0};
+        size_t n = strlen(shuffle_state);
+        if (n >= sizeof(lowered)) {
+            n = sizeof(lowered) - 1;
+        }
+        for (size_t i = 0; i < n; i++) {
+            lowered[i] = (char)tolower((unsigned char)shuffle_state[i]);
+        }
+        bool parsed = parse_bool_token(lowered, out_shuffle);
+        free(shuffle_state);
+        return parsed;
+    }
+
+    return false;
+}
+
+static bool parse_repeat_state_from_json(const char *json, ytmd_client_repeat_t *out_repeat)
+{
+    if (!json || !out_repeat) {
+        return false;
+    }
+
+    char *repeat = extract_quoted_json_string_after_key(json, "\"repeatType\"", false);
+    if (!repeat) {
+        repeat = extract_quoted_json_string_after_key(json, "\"repeatMode\"", false);
+    }
+    if (!repeat) {
+        repeat = extract_quoted_json_string_after_key(json, "\"mode\"", false);
+    }
+    if (!repeat) {
+        repeat = extract_quoted_json_string_after_key(json, "\"state\"", false);
+    }
+    if (!repeat) {
+        repeat = extract_quoted_json_string_after_key(json, "\"value\"", false);
+    }
+
+    if (repeat) {
+        parse_repeat_mode(repeat, out_repeat);
+        free(repeat);
+        return true;
+    }
+
+    int repeat_int = 0;
+    if (extract_json_int_after_key(json, "\"repeatType\"", &repeat_int) ||
+        extract_json_int_after_key(json, "\"repeatMode\"", &repeat_int) ||
+        extract_json_int_after_key(json, "\"mode\"", &repeat_int) ||
+        extract_json_int_after_key(json, "\"state\"", &repeat_int) ||
+        extract_json_int_after_key(json, "\"value\"", &repeat_int) ||
+        parse_top_level_int(json, &repeat_int)) {
+        map_repeat_int_mode(repeat_int, out_repeat);
+        return true;
+    }
+
+    char top_token[24] = {0};
+    if (extract_top_level_token(json, top_token, sizeof(top_token))) {
+        parse_repeat_mode(top_token, out_repeat);
+        return true;
+    }
+
+    return false;
+}
+
+static void apply_like_status_token(const char *like_status, ytmd_client_playback_state_t *state)
+{
+    if (!like_status || !state) {
+        return;
+    }
+
+    char lowered[32] = {0};
+    size_t n = strlen(like_status);
+    if (n >= sizeof(lowered)) {
+        n = sizeof(lowered) - 1;
+    }
+    for (size_t i = 0; i < n; i++) {
+        lowered[i] = (char)tolower((unsigned char)like_status[i]);
+    }
+
+    if (strstr(lowered, "dislike") || strstr(lowered, "thumb_down")) {
+        state->has_liked = true;
+        state->is_liked = false;
+        state->has_disliked = true;
+        state->is_disliked = true;
+    } else if (strstr(lowered, "like") || strstr(lowered, "thumb_up")) {
+        state->has_liked = true;
+        state->is_liked = true;
+        state->has_disliked = true;
+        state->is_disliked = false;
+    } else if (strstr(lowered, "none") || strstr(lowered, "neutral")) {
+        state->has_liked = true;
+        state->is_liked = false;
+        state->has_disliked = true;
+        state->is_disliked = false;
+    }
+}
+
+static bool parse_like_state_from_json(const char *json, ytmd_client_playback_state_t *state)
+{
+    if (!json || !state) {
+        return false;
+    }
+
+    bool parsed = false;
+    bool v = false;
+    if (extract_json_bool_after_key(json, "\"isLiked\"", &v) ||
+        extract_json_bool_after_key(json, "\"liked\"", &v)) {
+        state->has_liked = true;
+        state->is_liked = v;
+        parsed = true;
+    }
+    if (extract_json_bool_after_key(json, "\"isDisliked\"", &v) ||
+        extract_json_bool_after_key(json, "\"disliked\"", &v)) {
+        state->has_disliked = true;
+        state->is_disliked = v;
+        parsed = true;
+    }
+
+    char *like_status = extract_quoted_json_string_after_key(json, "\"likeStatus\"", false);
+    if (!like_status) {
+        like_status = extract_quoted_json_string_after_key(json, "\"state\"", false);
+    }
+    if (!like_status) {
+        like_status = extract_quoted_json_string_after_key(json, "\"value\"", false);
+    }
+    if (like_status) {
+        apply_like_status_token(like_status, state);
+        free(like_status);
+        parsed = true;
+    }
+
+    if (!parsed) {
+        int state_int = 0;
+        if (parse_top_level_int(json, &state_int)) {
+            state->has_liked = true;
+            state->has_disliked = true;
+            state->is_liked = (state_int > 0);
+            state->is_disliked = (state_int < 0);
+            parsed = true;
+        } else if (parse_top_level_bool(json, &v)) {
+            state->has_liked = true;
+            state->has_disliked = true;
+            state->is_liked = v;
+            state->is_disliked = false;
+            parsed = true;
+        } else {
+            char token[32] = {0};
+            if (extract_top_level_token(json, token, sizeof(token))) {
+                apply_like_status_token(token, state);
+                parsed = true;
+            }
+        }
+    }
+
+    return parsed;
+}
+
+static bool parse_seek_seconds_from_token(const char *token, int *out_seconds)
+{
+    if (!token || !out_seconds) {
+        return false;
+    }
+
+    char buf[64] = {0};
+    size_t n = 0;
+    while (token[n] && token[n] != '/' && n + 1 < sizeof(buf)) {
+        buf[n] = token[n];
+        n++;
+    }
+    buf[n] = '\0';
+
+    char *start = buf;
+    while (*start && isspace((unsigned char)*start)) {
+        start++;
+    }
+    if (*start == '\0') {
+        return false;
+    }
+
+    char *end_trim = start + strlen(start);
+    while (end_trim > start && isspace((unsigned char)end_trim[-1])) {
+        end_trim--;
+    }
+    *end_trim = '\0';
+    if (*start == '\0') {
+        return false;
+    }
+
+    if (strchr(start, ':') == NULL) {
+        char *end_ptr = NULL;
+        long v = strtol(start, &end_ptr, 10);
+        if (end_ptr == start || v < 0 || v > INT_MAX) {
+            return false;
+        }
+        *out_seconds = (int)v;
+        return true;
+    }
+
+    int parts[3] = {0};
+    int part_count = 0;
+    char *cursor = start;
+    while (*cursor && part_count < 3) {
+        while (*cursor && isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        if (!isdigit((unsigned char)*cursor)) {
+            return false;
+        }
+
+        char *part_end = NULL;
+        long v = strtol(cursor, &part_end, 10);
+        if (part_end == cursor || v < 0 || v > INT_MAX) {
+            return false;
+        }
+        parts[part_count++] = (int)v;
+        cursor = part_end;
+
+        while (*cursor && isspace((unsigned char)*cursor)) {
+            cursor++;
+        }
+        if (*cursor == ':') {
+            cursor++;
+            continue;
+        }
+        break;
+    }
+
+    while (*cursor && isspace((unsigned char)*cursor)) {
+        cursor++;
+    }
+    if (*cursor != '\0') {
+        return false;
+    }
+    if (part_count < 2 || part_count > 3) {
+        return false;
+    }
+
+    int64_t sec = 0;
+    if (part_count == 2) {
+        sec = (int64_t)parts[0] * 60 + parts[1];
+    } else {
+        sec = (int64_t)parts[0] * 3600 + (int64_t)parts[1] * 60 + parts[2];
+    }
+    if (sec < 0 || sec > INT_MAX) {
+        return false;
+    }
+
+    *out_seconds = (int)sec;
+    return true;
+}
+
+static bool extract_seek_seconds_from_song_json(const char *json, int *out_seconds)
+{
+    if (!json || !out_seconds) {
+        return false;
+    }
+
+    static const char *sec_keys[] = {
+        "\"elapsedSeconds\"",
+        "\"elapsedSec\"",
+        "\"currentTimeSeconds\"",
+        "\"currentSeconds\"",
+        "\"positionSeconds\"",
+        "\"seekSeconds\"",
+    };
+    for (size_t i = 0; i < sizeof(sec_keys) / sizeof(sec_keys[0]); ++i) {
+        int v = 0;
+        if (extract_json_int_after_key(json, sec_keys[i], &v) && v >= 0) {
+            *out_seconds = v;
+            return true;
+        }
+    }
+
+    static const char *ms_keys[] = {
+        "\"elapsedMilliseconds\"",
+        "\"elapsedMs\"",
+        "\"currentTimeMs\"",
+        "\"positionMs\"",
+        "\"seekMs\"",
+    };
+    for (size_t i = 0; i < sizeof(ms_keys) / sizeof(ms_keys[0]); ++i) {
+        int v = 0;
+        if (extract_json_int_after_key(json, ms_keys[i], &v) && v >= 0) {
+            *out_seconds = v / 1000;
+            return true;
+        }
+    }
+
+    static const char *text_keys[] = {
+        "\"elapsed\"",
+        "\"currentTime\"",
+        "\"position\"",
+        "\"seek\"",
+    };
+    for (size_t i = 0; i < sizeof(text_keys) / sizeof(text_keys[0]); ++i) {
+        char *token = extract_quoted_json_string_after_key(json, text_keys[i], false);
+        if (!token) {
+            continue;
+        }
+        int sec = 0;
+        bool ok = parse_seek_seconds_from_token(token, &sec);
+        free(token);
+        if (ok) {
+            *out_seconds = sec;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool extract_song_duration_seconds_from_song_json(const char *json, int *out_seconds)
+{
+    if (!json || !out_seconds) {
+        return false;
+    }
+
+    static const char *sec_keys[] = {
+        "\"songDuration\"",
+        "\"durationSeconds\"",
+        "\"songDurationSeconds\"",
+    };
+    for (size_t i = 0; i < sizeof(sec_keys) / sizeof(sec_keys[0]); ++i) {
+        int v = 0;
+        if (extract_json_int_after_key(json, sec_keys[i], &v) && v >= 0) {
+            *out_seconds = v;
+            return true;
+        }
+    }
+
+    static const char *ms_keys[] = {
+        "\"songDurationMs\"",
+        "\"durationMs\"",
+    };
+    for (size_t i = 0; i < sizeof(ms_keys) / sizeof(ms_keys[0]); ++i) {
+        int v = 0;
+        if (extract_json_int_after_key(json, ms_keys[i], &v) && v >= 0) {
+            *out_seconds = v / 1000;
+            return true;
+        }
+    }
+
+    static const char *text_keys[] = {
+        "\"songDuration\"",
+        "\"duration\"",
+    };
+    for (size_t i = 0; i < sizeof(text_keys) / sizeof(text_keys[0]); ++i) {
+        char *token = extract_quoted_json_string_after_key(json, text_keys[i], false);
+        if (!token) {
+            continue;
+        }
+        int sec = 0;
+        bool ok = parse_seek_seconds_from_token(token, &sec);
+        free(token);
+        if (ok) {
+            *out_seconds = sec;
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static void extract_next_song_from_song_json(const char *json, ytmd_client_playback_state_t *state)
@@ -867,82 +1821,156 @@ static void extract_playback_state_from_song_json(const uint8_t *json_data,
     if (extract_json_bool_after_key(json, "\"isPlaying\"", &v)) {
         state->has_playing = true;
         state->is_playing = v;
-    } else if (extract_json_bool_after_key(json, "\"isPaused\"", &v)) {
-        state->has_playing = true;
-        state->is_playing = !v;
-    } else if (extract_json_bool_after_key(json, "\"paused\"", &v)) {
+    }
+    if (extract_json_bool_after_key(json, "\"isPaused\"", &v) ||
+        extract_json_bool_after_key(json, "\"paused\"", &v)) {
+        state->has_paused = true;
+        state->is_paused = v;
+        // isPaused is a direct state signal; mirror to play-state for existing UI path.
         state->has_playing = true;
         state->is_playing = !v;
     }
 
-    if (extract_json_bool_after_key(json, "\"shuffleEnabled\"", &v) ||
-        extract_json_bool_after_key(json, "\"shuffleMode\"", &v) ||
-        extract_json_bool_after_key(json, "\"isShuffle\"", &v)) {
+    if (parse_shuffle_state_from_json(json, &v)) {
         state->has_shuffle = true;
         state->is_shuffle = v;
     }
 
-    char *repeat = extract_quoted_json_string_after_key(json, "\"repeatType\"", false);
-    if (!repeat) {
-        repeat = extract_quoted_json_string_after_key(json, "\"repeatMode\"", false);
-    }
-    if (repeat) {
+    ytmd_client_repeat_t repeat = YTMD_CLIENT_REPEAT_NONE;
+    if (parse_repeat_state_from_json(json, &repeat)) {
         state->has_repeat = true;
-        parse_repeat_mode(repeat, &state->repeat);
-        free(repeat);
-    } else {
-        int repeat_int = 0;
-        if (extract_json_int_after_key(json, "\"repeatType\"", &repeat_int) ||
-            extract_json_int_after_key(json, "\"repeatMode\"", &repeat_int)) {
-            state->has_repeat = true;
-            if (repeat_int == 1) {
-                state->repeat = YTMD_CLIENT_REPEAT_ALL;
-            } else if (repeat_int == 2) {
-                state->repeat = YTMD_CLIENT_REPEAT_ONE;
-            } else {
-                state->repeat = YTMD_CLIENT_REPEAT_NONE;
-            }
-        }
+        state->repeat = repeat;
     }
 
-    if (extract_json_bool_after_key(json, "\"isLiked\"", &v) ||
-        extract_json_bool_after_key(json, "\"liked\"", &v)) {
-        state->has_liked = true;
-        state->is_liked = v;
-    }
-    if (extract_json_bool_after_key(json, "\"isDisliked\"", &v) ||
-        extract_json_bool_after_key(json, "\"disliked\"", &v)) {
-        state->has_disliked = true;
-        state->is_disliked = v;
+    (void)parse_like_state_from_json(json, state);
+
+    int seek_seconds = 0;
+    if (extract_seek_seconds_from_song_json(json, &seek_seconds)) {
+        state->has_seek_seconds = true;
+        state->seek_seconds = seek_seconds;
+        state->has_elapsed_seconds = true;
+        state->elapsed_seconds = seek_seconds;
     }
 
-    char *like_status = extract_quoted_json_string_after_key(json, "\"likeStatus\"", false);
-    if (like_status) {
-        char lowered[24] = {0};
-        size_t n = strlen(like_status);
-        if (n >= sizeof(lowered)) {
-            n = sizeof(lowered) - 1;
-        }
-        for (size_t i = 0; i < n; i++) {
-            lowered[i] = (char)tolower((unsigned char)like_status[i]);
-        }
-
-        if (strstr(lowered, "dislike")) {
-            state->has_liked = true;
-            state->is_liked = false;
-            state->has_disliked = true;
-            state->is_disliked = true;
-        } else if (strstr(lowered, "like")) {
-            state->has_liked = true;
-            state->is_liked = true;
-            state->has_disliked = true;
-            state->is_disliked = false;
-        }
-        free(like_status);
+    int song_duration_seconds = 0;
+    if (extract_song_duration_seconds_from_song_json(json, &song_duration_seconds)) {
+        state->has_song_duration_seconds = true;
+        state->song_duration_seconds = song_duration_seconds;
     }
 
     extract_next_song_from_song_json(json, state);
     free(json);
+}
+
+static void enrich_playback_state_from_endpoint(const char *url,
+                                                ytmd_client_playback_state_t *state,
+                                                ytmd_network_diag_cb_t net_diag_cb)
+{
+    if (!url || !state) {
+        return;
+    }
+
+    uint8_t *json = NULL;
+    size_t json_len = 0;
+    esp_err_t err = http_get_alloc(url,
+                                   MAX_STATE_JSON_BYTES,
+                                   HTTP_STATE_TIMEOUT_MS,
+                                   true,
+                                   net_diag_cb,
+                                   NULL,
+                                   NULL,
+                                   &json,
+                                   &json_len);
+    if (err == ESP_OK && json && json_len > 0) {
+        extract_playback_state_from_song_json(json, json_len, state);
+    }
+    free(json);
+}
+
+static void enrich_next_song_from_queue_endpoints(ytmd_client_playback_state_t *state,
+                                                  ytmd_network_diag_cb_t net_diag_cb)
+{
+    if (!state || state->has_next_song) {
+        if (state && state->has_next_song) {
+            ESP_LOGD(TAG, "NEXT: /song already has next (title='%s', artist='%s'), skip queue fetch",
+                     state->next_title, state->next_artist);
+        }
+        return;
+    }
+
+    if (s_queue_next_supported) {
+        ESP_LOGD(TAG, "NEXT: request /api/v1/queue/next");
+        uint8_t *queue_next_json = NULL;
+        size_t queue_next_json_len = 0;
+        int queue_next_status = 0;
+        esp_err_t err = http_get_alloc(YTMD_URL_API_QUEUE_NEXT,
+                                       MAX_QUEUE_NEXT_JSON_BYTES,
+                                       HTTP_QUEUE_TIMEOUT_MS,
+                                       true,
+                                       net_diag_cb,
+                                       &queue_next_status,
+                                       NULL,
+                                       &queue_next_json,
+                                       &queue_next_json_len);
+        ESP_LOGD(TAG, "NEXT: /queue/next result err=%s http=%d bytes=%u",
+                 esp_err_to_name(err), queue_next_status, (unsigned)queue_next_json_len);
+        if (err == ESP_OK && queue_next_json && queue_next_json_len > 0) {
+            if (extract_next_song_from_queue_next_json(queue_next_json,
+                                                       queue_next_json_len,
+                                                       state->next_title,
+                                                       sizeof(state->next_title),
+                                                       state->next_artist,
+                                                       sizeof(state->next_artist))) {
+                state->has_next_song = true;
+                log_next_track_if_changed("/queue/next", state->next_title, state->next_artist);
+            } else {
+                ESP_LOGD(TAG, "NEXT: parse miss on /queue/next payload");
+            }
+        } else if (queue_next_status == 404 || queue_next_status == 405) {
+            s_queue_next_supported = false;
+            ESP_LOGW(TAG, "Disabling /queue/next enrichment (HTTP %d), keeping /queue fallback", queue_next_status);
+        }
+        free(queue_next_json);
+    }
+
+    if (!state->has_next_song && s_queue_fallback_enabled) {
+        ESP_LOGD(TAG, "NEXT: request /api/v1/queue");
+        uint8_t *queue_json = NULL;
+        size_t queue_json_len = 0;
+        bool queue_too_large = false;
+        int queue_status = 0;
+        esp_err_t err = http_get_alloc(YTMD_URL_API_QUEUE,
+                                       MAX_QUEUE_JSON_BYTES,
+                                       HTTP_QUEUE_TIMEOUT_MS,
+                                       true,
+                                       net_diag_cb,
+                                       &queue_status,
+                                       &queue_too_large,
+                                       &queue_json,
+                                       &queue_json_len);
+        ESP_LOGD(TAG, "NEXT: /queue result err=%s http=%d bytes=%u",
+                 esp_err_to_name(err), queue_status, (unsigned)queue_json_len);
+        if (err == ESP_OK && queue_json && queue_json_len > 0) {
+            if (extract_next_song_from_queue_json(queue_json,
+                                                  queue_json_len,
+                                                  state->next_title,
+                                                  sizeof(state->next_title),
+                                                  state->next_artist,
+                                                  sizeof(state->next_artist))) {
+                state->has_next_song = true;
+                log_next_track_if_changed("/queue", state->next_title, state->next_artist);
+            } else {
+                ESP_LOGD(TAG, "NEXT: parse miss on /queue payload");
+            }
+        } else if (queue_too_large) {
+            ESP_LOGW(TAG, "NEXT: /queue payload exceeded %u bytes (will retry next poll)", (unsigned)MAX_QUEUE_JSON_BYTES);
+        }
+        free(queue_json);
+    }
+
+    if (!state->has_next_song) {
+        ESP_LOGD(TAG, "NEXT: no next-song info after queue enrichment");
+    }
 }
 
 static bool extract_next_song_from_queue_json(const uint8_t *json_data,
@@ -966,49 +1994,207 @@ static bool extract_next_song_from_queue_json(const uint8_t *json_data,
     memcpy(json, json_data, json_len);
     json[json_len] = '\0';
 
-    int selected_index = -1;
-    if (!extract_json_int_after_key(json, "\"selected\"", &selected_index) &&
-        !extract_json_int_after_key(json, "\"selectedIndex\"", &selected_index) &&
-        !extract_json_int_after_key(json, "\"selectedItemIndex\"", &selected_index)) {
-        free(json);
-        return false;
+    bool cache_locked = false;
+    bool cache_enabled = false;
+    bool cache_overflow_logged = false;
+    if (queue_cache_lock(pdMS_TO_TICKS(20))) {
+        cache_locked = true;
+        if (ensure_queue_cache_alloc()) {
+            cache_enabled = true;
+            s_queue_cache_count = 0;
+            s_queue_cache_selected_pos = -1;
+        }
     }
 
-    const int target_index = selected_index + 1;
-    int item_index = -1;
+    bool selected_seen = false;
+    int selected_index = -1;
     const char *scan = strstr(json, "\"items\"");
     if (!scan) {
         scan = json;
     }
 
-    while ((scan = strstr(scan, "\"title\"")) != NULL) {
-        char *title = extract_quoted_json_string_after_key(scan, "\"title\"", false);
-        if (!title || title[0] == '\0') {
-            free(title);
-            scan += 7;
+    while ((scan = strstr(scan, "\"playlistPanelVideoRenderer\"")) != NULL) {
+        const char *colon = strchr(scan + strlen("\"playlistPanelVideoRenderer\""), ':');
+        if (!colon) {
+            break;
+        }
+
+        const char *renderer_start = skip_json_ws(colon + 1);
+        if (!renderer_start || *renderer_start != '{') {
+            scan = colon + 1;
             continue;
         }
 
-        char *artist = extract_quoted_json_string_after_key(scan, "\"artist\"", false);
-        if (!artist) {
-            artist = extract_quoted_json_string_after_key(scan, "\"author\"", false);
+        int depth = 0;
+        bool in_string = false;
+        bool escaped = false;
+        const char *renderer_end = NULL;
+        for (const char *p = renderer_start; *p; ++p) {
+            char c = *p;
+            if (in_string) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            if (c == '"') {
+                in_string = true;
+                continue;
+            }
+            if (c == '{') {
+                depth++;
+                continue;
+            }
+            if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    renderer_end = p;
+                    break;
+                }
+            }
         }
 
-        item_index++;
-        if (item_index == target_index) {
-            copy_string_field(out_title, out_title_cap, title);
-            copy_string_field(out_artist, out_artist_cap, artist);
+        if (!renderer_end || renderer_end <= renderer_start) {
+            break;
+        }
+
+        size_t renderer_len = (size_t)(renderer_end - renderer_start + 1);
+        char *renderer_json = (char *)malloc(renderer_len + 1);
+        if (!renderer_json) {
+            break;
+        }
+        memcpy(renderer_json, renderer_start, renderer_len);
+        renderer_json[renderer_len] = '\0';
+
+        bool is_selected = false;
+        (void)extract_json_bool_after_key(renderer_json, "\"selected\"", &is_selected);
+        int row_index = -1;
+        (void)extract_json_int_after_key(renderer_json, "\"index\"", &row_index);
+
+        char *video_id_token = extract_quoted_json_string_after_key(renderer_json, "\"videoId\"", false);
+        char *video_id = dup_video_id_if_valid(video_id_token);
+        free(video_id_token);
+
+        if (!video_id) {
+            const char *watch_obj = strstr(renderer_json, "\"watchEndpoint\"");
+            if (watch_obj) {
+                video_id_token = extract_quoted_json_string_after_key(watch_obj, "\"videoId\"", false);
+                video_id = dup_video_id_if_valid(video_id_token);
+                free(video_id_token);
+            }
+        }
+
+        char *thumb_url = NULL;
+        const char *thumb_obj = strstr(renderer_json, "\"thumbnail\"");
+        if (thumb_obj) {
+            thumb_url = extract_quoted_json_string_after_key(thumb_obj, "\"url\"", true);
+        }
+        if (!thumb_url) {
+            thumb_url = extract_quoted_json_string_after_key(renderer_json, "\"url\"", true);
+        }
+
+        char *title = NULL;
+        const char *title_obj = strstr(renderer_json, "\"title\"");
+        if (title_obj) {
+            title = extract_quoted_json_string_after_key(title_obj, "\"text\"", false);
+        }
+        if (!title || title[0] == '\0') {
             free(title);
+            title = extract_quoted_json_string_after_key(renderer_json, "\"title\"", false);
+        }
+
+        char *artist = NULL;
+        const char *short_byline_obj = strstr(renderer_json, "\"shortBylineText\"");
+        if (short_byline_obj) {
+            artist = extract_quoted_json_string_after_key(short_byline_obj, "\"text\"", false);
+        }
+        if (!artist || artist[0] == '\0') {
             free(artist);
-            free(json);
-            return true;
+            artist = NULL;
+            const char *long_byline_obj = strstr(renderer_json, "\"longBylineText\"");
+            if (long_byline_obj) {
+                artist = extract_quoted_json_string_after_key(long_byline_obj, "\"text\"", false);
+            }
+        }
+        if (!artist || artist[0] == '\0') {
+            free(artist);
+            artist = extract_quoted_json_string_after_key(renderer_json, "\"artist\"", false);
+        }
+        if (!artist || artist[0] == '\0') {
+            free(artist);
+            artist = extract_quoted_json_string_after_key(renderer_json, "\"author\"", false);
+        }
+
+        const bool has_track = ((title && title[0] != '\0') ||
+                                (artist && artist[0] != '\0') ||
+                                (video_id && video_id[0] != '\0') ||
+                                (thumb_url && thumb_url[0] != '\0'));
+        if (cache_enabled && has_track) {
+            if (s_queue_cache_count < YTMD_QUEUE_CACHE_CAPACITY) {
+                ytmd_client_queue_item_t *item = &s_queue_cache_items[s_queue_cache_count];
+                memset(item, 0, sizeof(*item));
+                item->index = (row_index >= 0) ? row_index : (int)s_queue_cache_count;
+                item->selected = is_selected;
+                copy_string_field(item->title, sizeof(item->title), title);
+                copy_string_field(item->artist, sizeof(item->artist), artist);
+                copy_string_field(item->video_id, sizeof(item->video_id), video_id);
+                copy_string_field(item->art_url, sizeof(item->art_url), thumb_url);
+                if (is_selected && s_queue_cache_selected_pos < 0) {
+                    s_queue_cache_selected_pos = (int)s_queue_cache_count;
+                }
+                s_queue_cache_count++;
+            } else if (!cache_overflow_logged) {
+                ESP_LOGW(TAG, "QUEUE CACHE: capacity reached (%u items), truncating",
+                         (unsigned)YTMD_QUEUE_CACHE_CAPACITY);
+                cache_overflow_logged = true;
+            }
+        }
+
+        if (selected_seen && has_track) {
+            if (selected_index >= 0 && row_index >= 0 && row_index <= selected_index) {
+                // wrapper/counterpart or duplicate row; keep scanning until index advances
+            } else if (selected_index >= 0 && row_index < 0) {
+                // Once selected index is known, ignore unindexed renderer entries.
+                // This avoids picking nested counterpart/menu-like renderers as "next".
+            } else {
+                copy_string_field(out_title, out_title_cap, title);
+                copy_string_field(out_artist, out_artist_cap, artist);
+                free(title);
+                free(artist);
+                free(video_id);
+                free(thumb_url);
+                free(renderer_json);
+                if (cache_locked) {
+                    queue_cache_unlock();
+                }
+                free(json);
+                return true;
+            }
+        }
+
+        if (is_selected) {
+            selected_seen = true;
+            if (row_index >= 0) {
+                selected_index = row_index;
+            }
         }
 
         free(title);
         free(artist);
-        scan += 7;
+        free(video_id);
+        free(thumb_url);
+        free(renderer_json);
+        scan = renderer_end + 1;
     }
 
+    if (cache_locked) {
+        queue_cache_unlock();
+    }
     free(json);
     return false;
 }
@@ -1532,71 +2718,10 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
     extract_song_title_artist_from_json(json, json_len, out_title, out_title_cap, out_artist, out_artist_cap);
     if (out_playback_state) {
         extract_playback_state_from_song_json(json, json_len, out_playback_state);
-    }
-
-    if (out_playback_state && !out_playback_state->has_next_song) {
-        if (s_queue_next_supported) {
-            uint8_t *queue_next_json = NULL;
-            size_t queue_next_json_len = 0;
-            int queue_next_status = 0;
-            err = http_get_alloc(YTMD_URL_API_QUEUE_NEXT,
-                                 MAX_QUEUE_NEXT_JSON_BYTES,
-                                 HTTP_QUEUE_TIMEOUT_MS,
-                                 true,
-                                 net_diag_cb,
-                                 &queue_next_status,
-                                 NULL,
-                                 &queue_next_json,
-                                 &queue_next_json_len);
-            if (err == ESP_OK && queue_next_json && queue_next_json_len > 0) {
-                if (extract_next_song_from_queue_next_json(queue_next_json,
-                                                           queue_next_json_len,
-                                                           out_playback_state->next_title,
-                                                           sizeof(out_playback_state->next_title),
-                                                           out_playback_state->next_artist,
-                                                           sizeof(out_playback_state->next_artist))) {
-                    out_playback_state->has_next_song = true;
-                }
-            } else if (queue_next_status == 404 || queue_next_status == 405) {
-                s_queue_next_supported = false;
-                s_queue_fallback_enabled = false;
-                ESP_LOGW(TAG, "Disabling queue enrichment paths (/queue/next HTTP %d)", queue_next_status);
-            }
-            free(queue_next_json);
-        }
-
-        if (!out_playback_state->has_next_song && s_queue_fallback_enabled) {
-            uint8_t *queue_json = NULL;
-            size_t queue_json_len = 0;
-            bool queue_too_large = false;
-            err = http_get_alloc(YTMD_URL_API_QUEUE,
-                                 MAX_QUEUE_JSON_BYTES,
-                                 HTTP_QUEUE_TIMEOUT_MS,
-                                 true,
-                                 net_diag_cb,
-                                 NULL,
-                                 &queue_too_large,
-                                 &queue_json,
-                                 &queue_json_len);
-            if (err == ESP_OK && queue_json && queue_json_len > 0) {
-                if (extract_next_song_from_queue_json(queue_json,
-                                                      queue_json_len,
-                                                      out_playback_state->next_title,
-                                                      sizeof(out_playback_state->next_title),
-                                                      out_playback_state->next_artist,
-                                                      sizeof(out_playback_state->next_artist))) {
-                    out_playback_state->has_next_song = true;
-                }
-                free(queue_json);
-            } else {
-                free(queue_json);
-                if (queue_too_large) {
-                    s_queue_fallback_enabled = false;
-                    ESP_LOGW(TAG, "Disabling /queue fallback (payload exceeded %u bytes)", (unsigned)MAX_QUEUE_JSON_BYTES);
-                }
-                err = ESP_OK;
-            }
-        }
+        enrich_playback_state_from_endpoint(YTMD_URL_API_SHUFFLE, out_playback_state, net_diag_cb);
+        enrich_playback_state_from_endpoint(YTMD_URL_API_REPEAT_MODE, out_playback_state, net_diag_cb);
+        enrich_playback_state_from_endpoint(YTMD_URL_API_LIKE_STATE, out_playback_state, net_diag_cb);
+        enrich_next_song_from_queue_endpoints(out_playback_state, net_diag_cb);
     }
 
     char *art_url = extract_art_url_from_song_json(json, json_len);
@@ -1631,6 +2756,14 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
         free(art_url);
         free(video_id);
         return ESP_ERR_NOT_FOUND;
+    }
+
+    if (art_cache_copy_to_dst(art_cache_key, dst_w, dst_h, dst_rgb565)) {
+        snprintf(out_art_url, out_art_url_cap, "%s", art_cache_key);
+        prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb);
+        free(art_url);
+        free(video_id);
+        return ESP_OK;
     }
 
     char fb_url[YTMD_ART_URL_MAX_LEN] = {0};
@@ -1763,11 +2896,55 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
     scale_crop_zoom_rgb565(decoded, w, h, stride, dst_rgb565, dst_w, dst_h, crop_zoom_percent);
     free(decoded);
 
+    (void)art_cache_store_from_src(art_cache_key, dst_w, dst_h, dst_rgb565);
+    prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb);
+
     snprintf(out_art_url, out_art_url_cap, "%s", art_cache_key);
     free(art_url);
     free(video_id);
 
     ESP_LOGI(TAG, "Album art decoded: src=%dx%d -> dst=%dx%d mode=crop zoom=%d%%", w, h, dst_w, dst_h, crop_zoom_percent);
+    return ESP_OK;
+}
+
+esp_err_t ytmd_client_queue_cache_get(ytmd_client_queue_item_t *out_items,
+                                      size_t max_items,
+                                      size_t *out_copied,
+                                      size_t *out_total,
+                                      int *out_selected_pos)
+{
+    if (out_copied) {
+        *out_copied = 0;
+    }
+    if (out_total) {
+        *out_total = 0;
+    }
+    if (out_selected_pos) {
+        *out_selected_pos = -1;
+    }
+
+    if (!queue_cache_lock(pdMS_TO_TICKS(50))) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    size_t total = s_queue_cache_count;
+    size_t copied = 0;
+    if (out_items && max_items > 0 && s_queue_cache_items && total > 0) {
+        copied = (total < max_items) ? total : max_items;
+        memcpy(out_items, s_queue_cache_items, copied * sizeof(ytmd_client_queue_item_t));
+    }
+
+    if (out_copied) {
+        *out_copied = copied;
+    }
+    if (out_total) {
+        *out_total = total;
+    }
+    if (out_selected_pos) {
+        *out_selected_pos = s_queue_cache_selected_pos;
+    }
+
+    queue_cache_unlock();
     return ESP_OK;
 }
 
@@ -1797,19 +2974,15 @@ esp_err_t ytmd_client_cmd_toggle_shuffle(void)
 
 esp_err_t ytmd_client_cmd_cycle_repeat(void)
 {
-    return ytmd_post_with_fallback("/api/v1/switch-repeat",
-                                   "{\"iteration\":1}",
-                                   "/api/v1/repeat-mode",
-                                   "{}",
-                                   NULL);
+    return ytmd_post_with_fallback("/api/v1/switch-repeat", "{\"iteration\":1}", NULL, NULL, NULL);
 }
 
 esp_err_t ytmd_client_cmd_toggle_like(void)
 {
-    return ESP_ERR_NOT_SUPPORTED;
+    return ytmd_post_with_fallback("/api/v1/like", "{}", NULL, NULL, NULL);
 }
 
 esp_err_t ytmd_client_cmd_toggle_dislike(void)
 {
-    return ESP_ERR_NOT_SUPPORTED;
+    return ytmd_post_with_fallback("/api/v1/dislike", "{}", NULL, NULL, NULL);
 }
