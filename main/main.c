@@ -36,10 +36,12 @@
 static const char *TAG = "USB_NCM_YTMD_ART";
 #define YTMD_AUX_STATE_ENRICH_INTERVAL_MS 1500
 #define YTMD_QUEUE_REFRESH_INTERVAL_MS 2500
-#define YTMD_PREV_TRACK_THRESHOLD_SEC 5
+#define YTMD_PREV_SEEK_SETTLE_MS 80
+#define YTMD_PREV_TRANSITION_GUARD_MS 1200
 
 static char s_last_art_url[YTMD_ART_URL_MAX_LEN] = {0};
 static TaskHandle_t s_album_task_handle = NULL;
+static uint32_t s_prev_transition_guard_until_tick = 0;
 
 /* ?¨ÏÉù ?ÅÌÉú ??ytmd_client ?ïÏû• ????Íµ¨Ï°∞Ï≤¥Î? Ï±ÑÏõå player_ui_update() ???ÑÎã¨ */
 static ytmd_player_state_t s_player_state = {0};
@@ -68,11 +70,10 @@ static esp_err_t apply_cached_art_from_queue_offset(int rel_offset, const char *
     text_changed |= update_text_field(s_player_state.artist, sizeof(s_player_state.artist), cached_artist);
     ui_display_present_album_art();
     player_ui_update_album_art();
-    snprintf(s_last_art_url, sizeof(s_last_art_url), "%s", cached_art_key);
     if (text_changed) {
         player_ui_update(&s_player_state);
     }
-    ESP_LOGI(TAG, "Optimistic album art (%s): %s", reason ? reason : "queue", s_last_art_url);
+    ESP_LOGI(TAG, "Optimistic album art (%s): %s", reason ? reason : "queue", cached_art_key);
     return ESP_OK;
 }
 static void request_album_refresh_immediate(void)
@@ -84,13 +85,20 @@ static void request_album_refresh_immediate(void)
 static void ui_cmd_prev(void *user_ctx)
 {
     (void)user_ctx;
+
+    // Make previous behavior deterministic: force head position first.
+    esp_err_t seek_err = ytmd_client_cmd_seek_to(0);
+    if (seek_err != ESP_OK) {
+        ESP_LOGW(TAG, "CMD(seek-to=0) before prev failed: %s", esp_err_to_name(seek_err));
+    } else {
+        vTaskDelay(pdMS_TO_TICKS(YTMD_PREV_SEEK_SETTLE_MS));
+    }
+
     esp_err_t err = ytmd_client_cmd_prev();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "CMD(prev): sent");
-        bool likely_prev_track = !s_player_state.has_elapsed_seconds || s_player_state.elapsed_seconds < YTMD_PREV_TRACK_THRESHOLD_SEC;
-        if (likely_prev_track) {
-            (void)apply_cached_art_from_queue_offset(-1, "prev");
-        }
+        s_prev_transition_guard_until_tick = (uint32_t)xTaskGetTickCount() + pdMS_TO_TICKS(YTMD_PREV_TRANSITION_GUARD_MS);
+        (void)apply_cached_art_from_queue_offset(-1, "prev");
         request_album_refresh_immediate();
     } else {
         ESP_LOGW(TAG, "CMD(prev) failed: %s", esp_err_to_name(err));
@@ -367,6 +375,7 @@ static void album_task(void *arg)
         bool playback_changed = apply_playback_state_to_player(&playback_state);
 
         if (err == ESP_OK) {
+            s_prev_transition_guard_until_tick = 0;
             ui_display_present_album_art();
             player_ui_update_album_art();
             snprintf(s_last_art_url, sizeof(s_last_art_url), "%s", new_art_url);
@@ -376,7 +385,16 @@ static void album_task(void *arg)
                      s_player_state.title[0] ? s_player_state.title : "-",
                      s_player_state.artist[0] ? s_player_state.artist : "-");
         } else {
-            if (text_changed || playback_changed) {
+            bool suppress_transient_update = false;
+            if (err == ESP_ERR_NOT_FOUND && s_prev_transition_guard_until_tick != 0) {
+                uint32_t now_tick_guard = (uint32_t)xTaskGetTickCount();
+                if ((int32_t)(s_prev_transition_guard_until_tick - now_tick_guard) > 0) {
+                    suppress_transient_update = true;
+                } else {
+                    s_prev_transition_guard_until_tick = 0;
+                }
+            }
+            if (!suppress_transient_update && (text_changed || playback_changed)) {
                 player_ui_update(&s_player_state);
                 // ESP_LOGI(TAG, "Playback state updated: %s - %s",
                 //          s_player_state.title[0] ? s_player_state.title : "-",
@@ -439,5 +457,6 @@ void app_main(void)
     }
 #endif
 }
+
 
 

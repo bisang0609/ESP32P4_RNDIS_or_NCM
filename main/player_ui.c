@@ -32,6 +32,7 @@ static const char *TAG = "PLAYER_UI";
 #define PLAYER_PLAYLIST_SYNC_INTERVAL_MS 500U
 #define PLAYER_PLAYLIST_PAGE_SIZE 10U
 #define PLAYER_PLAYLIST_SCROLL_ANIM_MS 30000U
+#define PLAYER_CACHE_ICON_SYNC_INTERVAL_MS 500U
 
 typedef struct {
     lv_obj_t *album_art;
@@ -50,8 +51,14 @@ typedef struct {
     lv_obj_t *time_now;
     lv_obj_t *total_time;
     lv_obj_t *golist;
+    lv_obj_t *load5;
+    lv_obj_t *load4;
+    lv_obj_t *load3;
+    lv_obj_t *load2;
+    lv_obj_t *load1;
     lv_obj_t *nowplay;
     lv_obj_t *playlist_area;
+    lv_obj_t *return_main;
     lv_obj_t *next_page;
     lv_obj_t *back_page;
 } player_ui_objects_t;
@@ -75,7 +82,8 @@ static bool s_seekbar_touch_active = false;
 static int s_seekbar_touch_target_seconds = -1;
 static char s_last_track_title[PLAYER_TITLE_MAX_LEN] = {0};
 static char s_last_track_artist[PLAYER_ARTIST_MAX_LEN] = {0};
-static lv_obj_t *s_album_bg = NULL;
+static lv_obj_t *s_album_bg_main = NULL;
+static lv_obj_t *s_album_bg_playlist = NULL;
 static uint32_t s_seekbar_indicator_color_hex = 0;
 static bool s_seekbar_indicator_color_valid = false;
 static lv_obj_t *s_playlist_back = NULL;
@@ -84,6 +92,8 @@ static uint32_t s_playlist_last_sync_tick = 0;
 static int s_playlist_page = 0;
 static int s_playlist_total_pages = 1;
 static int s_playlist_render_page = -1;
+static uint32_t s_cache_icon_last_sync_tick = 0;
+static bool s_playlist_cache_ready = false;
 
 typedef struct {
     lv_obj_t *row;
@@ -131,8 +141,14 @@ static const object_ref_entry_t s_generated_object_map[] = {
     { "time_now", &objects.time_now },
     { "total_time", &objects.total_time },
     { "golist", &objects.golist },
+    { "load5", &objects.load5 },
+    { "load4", &objects.load4 },
+    { "load3", &objects.load3 },
+    { "load2", &objects.load2 },
+    { "load1", &objects.load1 },
     { "nowplay", &objects.nowplay },
     { "playlist_area", &objects.playlist_area },
+    { "return_main", &objects.return_main },
     { "next_page", &objects.next_page },
     { "back_page", &objects.back_page },
 };
@@ -226,8 +242,14 @@ static void bind_ui_objects_by_name(void)
         { "time_now", &s_ui.time_now },
         { "total_time", &s_ui.total_time },
         { "golist", &s_ui.golist },
+        { "load5", &s_ui.load5 },
+        { "load4", &s_ui.load4 },
+        { "load3", &s_ui.load3 },
+        { "load2", &s_ui.load2 },
+        { "load1", &s_ui.load1 },
         { "nowplay", &s_ui.nowplay },
         { "playlist_area", &s_ui.playlist_area },
+        { "return_main", &s_ui.return_main },
         { "next_page", &s_ui.next_page },
         { "back_page", &s_ui.back_page },
     };
@@ -880,6 +902,10 @@ static void on_playlist_back_clicked(lv_event_t *e)
 
 static lv_obj_t *find_playlist_back_button(void)
 {
+    if (s_ui.return_main) {
+        return s_ui.return_main;
+    }
+
     if (!objects.playlist) {
         return NULL;
     }
@@ -1032,27 +1058,73 @@ static void apply_dislike_state_image(bool is_disliked)
     set_image_by_name(s_ui.song_senti, is_disliked ? "Thumb_Down_enable" : "Thumb_Down_disable");
 }
 
-static void setup_album_art_background(void)
+static bool is_playlist_cache_ready_now(void)
 {
-    if (!objects.main) {
+    size_t total = 0;
+    esp_err_t err = ytmd_client_queue_cache_get_compact(NULL, 0, NULL, &total, NULL);
+    return (err == ESP_OK) && (total > 0);
+}
+
+static bool has_cached_art_for_offset(int rel_offset)
+{
+    return ytmd_client_has_cached_art_by_queue_offset(rel_offset, NULL, 0);
+}
+
+static void update_playlist_ready_icons(void)
+{
+    if (s_ui.golist) {
+        set_image_by_name(s_ui.golist, s_playlist_cache_ready ? "List_enable" : "List_disable");
+    }
+
+    if (!s_playlist_cache_ready) {
+        if (s_ui.load1) set_image_by_name(s_ui.load1, "circle_1");
+        if (s_ui.load2) set_image_by_name(s_ui.load2, "circle_1");
+        if (s_ui.load3) set_image_by_name(s_ui.load3, "circle_1");
+        if (s_ui.load4) set_image_by_name(s_ui.load4, "circle_1");
+        if (s_ui.load5) set_image_by_name(s_ui.load5, "circle_1");
         return;
     }
 
-    if (!s_album_bg) {
-        s_album_bg = lv_image_create(objects.main);
-        if (!s_album_bg) {
+    if (s_ui.load1) set_image_by_name(s_ui.load1, has_cached_art_for_offset(-2) ? "circle_2" : "circle_1");
+    if (s_ui.load2) set_image_by_name(s_ui.load2, has_cached_art_for_offset(-1) ? "circle_2" : "circle_1");
+    if (s_ui.load3) set_image_by_name(s_ui.load3, has_cached_art_for_offset(0) ? "circle_2" : "circle_1");
+    if (s_ui.load4) set_image_by_name(s_ui.load4, has_cached_art_for_offset(1) ? "circle_2" : "circle_1");
+    if (s_ui.load5) set_image_by_name(s_ui.load5, has_cached_art_for_offset(2) ? "circle_2" : "circle_1");
+}
+
+static void sync_playlist_cache_icons(bool force)
+{
+    const uint32_t now_tick = lv_tick_get();
+    if (!force && s_cache_icon_last_sync_tick != 0 &&
+        (now_tick - s_cache_icon_last_sync_tick) < PLAYER_CACHE_ICON_SYNC_INTERVAL_MS) {
+        return;
+    }
+    s_cache_icon_last_sync_tick = now_tick;
+    s_playlist_cache_ready = is_playlist_cache_ready_now();
+    update_playlist_ready_icons();
+}
+
+static void setup_album_art_background_for_screen(lv_obj_t *screen, lv_obj_t **layer_ref)
+{
+    if (!screen || !layer_ref) {
+        return;
+    }
+
+    if (!*layer_ref) {
+        *layer_ref = lv_image_create(screen);
+        if (!*layer_ref) {
             ESP_LOGW(TAG, "Failed to create album background layer");
             return;
         }
 
-        lv_obj_clear_flag(s_album_bg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_img_opa(s_album_bg, PLAYER_BG_ART_OPA, LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_img_recolor(s_album_bg, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
-        lv_obj_set_style_img_recolor_opa(s_album_bg, PLAYER_BG_ART_RECOLOR_OPA, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_clear_flag(*layer_ref, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_img_opa(*layer_ref, PLAYER_BG_ART_OPA, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_img_recolor(*layer_ref, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_img_recolor_opa(*layer_ref, PLAYER_BG_ART_RECOLOR_OPA, LV_PART_MAIN | LV_STATE_DEFAULT);
     }
 
-    int screen_w = lv_obj_get_width(objects.main);
-    int screen_h = lv_obj_get_height(objects.main);
+    int screen_w = lv_obj_get_width(screen);
+    int screen_h = lv_obj_get_height(screen);
     if (screen_w <= 0) {
         screen_w = 800;
     }
@@ -1060,11 +1132,11 @@ static void setup_album_art_background(void)
         screen_h = 480;
     }
 
-    lv_obj_set_size(s_album_bg, UI_ALBUM_ART_W, UI_ALBUM_ART_H);
-    lv_obj_set_pos(s_album_bg,
+    lv_obj_set_size(*layer_ref, UI_ALBUM_ART_W, UI_ALBUM_ART_H);
+    lv_obj_set_pos(*layer_ref,
                    (screen_w - UI_ALBUM_ART_W) / 2,
                    (screen_h - UI_ALBUM_ART_H) / 2);
-    lv_image_set_pivot(s_album_bg, UI_ALBUM_ART_W / 2, UI_ALBUM_ART_H / 2);
+    lv_image_set_pivot(*layer_ref, UI_ALBUM_ART_W / 2, UI_ALBUM_ART_H / 2);
 
     uint32_t scale_x = (uint32_t)((screen_w * 256 + UI_ALBUM_ART_W - 1) / UI_ALBUM_ART_W);
     uint32_t scale_y = (uint32_t)((screen_h * 256 + UI_ALBUM_ART_H - 1) / UI_ALBUM_ART_H);
@@ -1072,22 +1144,34 @@ static void setup_album_art_background(void)
     if (scale < LV_SCALE_NONE) {
         scale = LV_SCALE_NONE;
     }
-    lv_image_set_scale(s_album_bg, scale);
+    lv_image_set_scale(*layer_ref, scale);
 
     const lv_img_dsc_t *album_dsc = ui_display_get_album_dsc();
     if (album_dsc) {
-        lv_img_set_src(s_album_bg, album_dsc);
+        lv_img_set_src(*layer_ref, album_dsc);
     }
-    lv_obj_move_to_index(s_album_bg, 0);
+    lv_obj_move_to_index(*layer_ref, 0);
+}
+
+static void setup_album_art_background(void)
+{
+    setup_album_art_background_for_screen(objects.main, &s_album_bg_main);
+    setup_album_art_background_for_screen(objects.playlist, &s_album_bg_playlist);
 }
 
 static void update_album_art_background(const lv_img_dsc_t *album_dsc)
 {
-    if (!s_album_bg || !album_dsc) {
+    if (!album_dsc) {
         return;
     }
-    lv_img_set_src(s_album_bg, album_dsc);
-    lv_obj_invalidate(s_album_bg);
+    if (s_album_bg_main) {
+        lv_img_set_src(s_album_bg_main, album_dsc);
+        lv_obj_invalidate(s_album_bg_main);
+    }
+    if (s_album_bg_playlist) {
+        lv_img_set_src(s_album_bg_playlist, album_dsc);
+        lv_obj_invalidate(s_album_bg_playlist);
+    }
 }
 
 static bool has_visible_text(const char *text)
@@ -1708,6 +1792,7 @@ void player_ui_init(void)
     configure_playlist_area();
     playlist_hide_designer_samples();
     playlist_sync_from_cache(true);
+    sync_playlist_cache_icons(true);
 
     bsp_display_unlock();
 
@@ -1801,6 +1886,8 @@ void player_ui_update(const ytmd_player_state_t *state)
         update_album_art_background(state->album_art_dsc);
         apply_seekbar_palette(state->album_art_dsc);
     }
+
+    sync_playlist_cache_icons(false);
 
     if (s_current_screen == SCREEN_ID_PLAYLIST) {
         const uint32_t now_tick = lv_tick_get();

@@ -113,6 +113,9 @@ esp_err_t ytmd_client_try_get_cached_art_by_queue_offset(int rel_offset,
                                                          size_t out_title_cap,
                                                          char *out_artist,
                                                          size_t out_artist_cap);
+bool ytmd_client_has_cached_art_by_queue_offset(int rel_offset,
+                                                 char *out_art_key,
+                                                 size_t out_art_key_cap);
 
 esp_err_t ytmd_client_enrich_playback_state(ytmd_client_playback_state_t *state,
                                             ytmd_network_diag_cb_t net_diag_cb);

@@ -11,6 +11,7 @@
 - 워킹트리 상태: 변경 있음 (`AI_HANDOFF.md` 갱신본, 커밋 전)
 - 작업/검증 범위: build만 수행 (flash 미실행)
 - ui 폴더의 ui 생성파일은 수정하지않음
+- 필요한 파일만 읽는다.
 
 ## 2) 현재 상태 요약
 - `next_song` 파싱/선택 로직 개선 반영 완료
@@ -131,3 +132,20 @@ powershell -ExecutionPolicy Bypass -File .\tools\start_clean_build.ps1 -ResetMan
   - paging enabled (10 items per page)
   - next/back page button visibility by page boundary
 - Build policy for this period: no build execution (per user request).
+
+## Session Update (2026-04-25, checkpoint 3)
+
+- Policy kept: do not manually edit EEZ-generated `main/ui/*` unless explicitly requested.
+- YTMD source-priority logic tightened in `main/ytmd_client.c`:
+  - if current track exists in `/api/v1/queue`, queue `title/artist` now overrides `/api/v1/song`
+  - if current track has queue art URL, queue art is forced as primary over song art URL
+  - fallback-first path is disabled when queue art is selected as primary
+- Cache identity stability improvements:
+  - track identity key includes `title + artist + duration`
+  - queue-offset cache lookup includes duration hint for current track (`rel_offset == 0`)
+- Boot/startup behavior improvements:
+  - prefetch scheduling now still runs even when current art is `same_as_last`
+  - reduces case where only current song art is loaded until next track change
+- Logging cleanup:
+  - queue override logs moved to debug-level style (`ESP_LOGD`) and emitted only when values actually change
+- Build policy this checkpoint: build was NOT executed (per user request).

@@ -64,6 +64,7 @@ static char s_last_logged_next_artist[128] = {0};
 static char s_track_hint_title[256] = {0};
 static char s_track_hint_artist[128] = {0};
 static char s_track_hint_video_id[32] = {0};
+static int s_track_hint_duration_seconds = -1;
 
 typedef struct {
     bool valid;
@@ -113,9 +114,41 @@ static void queue_cache_unlock(void);
 static bool ensure_queue_cache_alloc(void);
 static int next_norm_alnum_char(const char **p);
 static bool text_equal_norm_alnum(const char *a, const char *b);
+static bool build_track_identity_key(const char *title,
+                                     const char *artist,
+                                     int duration_seconds,
+                                     char *out_key,
+                                     size_t out_key_cap);
 static int queue_cache_find_selected_pos_by_hint_locked(const char *title,
                                                         const char *artist,
                                                         const char *video_id);
+static void queue_cache_set_selected_pos_locked(int pos);
+static void queue_cache_align_selected_with_hint_locked(void);
+static const char *resolve_stable_video_id_for_track(const char *title,
+                                                     const char *artist,
+                                                     const char *raw_video_id,
+                                                     char *out_video_id,
+                                                     size_t out_video_id_cap);
+static int resolve_queue_item_pos_for_track_locked(const char *title,
+                                                   const char *artist,
+                                                   const char *video_id,
+                                                   bool require_art_url);
+static bool resolve_queue_art_url_for_track(const char *title,
+                                            const char *artist,
+                                            const char *video_id,
+                                            char *out_art_url,
+                                            size_t out_art_url_cap);
+static bool resolve_queue_title_artist_for_track(const char *title,
+                                                 const char *artist,
+                                                 const char *video_id,
+                                                 char *out_title,
+                                                 size_t out_title_cap,
+                                                 char *out_artist,
+                                                 size_t out_artist_cap);
+static const char *resolve_queue_item_video_id_locked(const ytmd_client_queue_item_t *item,
+                                                      int rel_offset,
+                                                      char *out_video_id,
+                                                      size_t out_video_id_cap);
 static bool queue_cache_copy_next_from_selected_locked(char *out_title,
                                                        size_t out_title_cap,
                                                        char *out_artist,
@@ -130,6 +163,7 @@ static void prefetch_req_unlock(void);
 static bool fill_next_song_from_queue_cache(ytmd_client_playback_state_t *state);
 static bool art_cache_copy_to_dst(const char *key, int dst_w, int dst_h, uint16_t *dst_rgb565);
 static bool art_cache_store_from_src(const char *key, int src_w, int src_h, const uint16_t *src_rgb565);
+static bool art_cache_has_key_any_size(const char *key);
 static void prefetch_art_window_from_queue(const char *current_cache_key,
                                            int dst_w,
                                            int dst_h,
@@ -925,6 +959,76 @@ static bool text_equal_norm_alnum(const char *a, const char *b)
     }
 }
 
+static bool build_track_identity_key(const char *title,
+                                     const char *artist,
+                                     int duration_seconds,
+                                     char *out_key,
+                                     size_t out_key_cap)
+{
+    if (!out_key || out_key_cap == 0) {
+        return false;
+    }
+    out_key[0] = '\0';
+
+    size_t n = 0;
+    int written_title = 0;
+    int written_artist = 0;
+
+    n += (size_t)snprintf(out_key + n, (n < out_key_cap) ? (out_key_cap - n) : 0, "track://");
+    if (n >= out_key_cap) {
+        out_key[out_key_cap - 1] = '\0';
+        return false;
+    }
+
+    const char *parts[2] = { title, artist };
+    int *written[2] = { &written_title, &written_artist };
+    for (int p = 0; p < 2; ++p) {
+        bool last_sep = false;
+        const char *s = parts[p] ? parts[p] : "";
+        for (const unsigned char *it = (const unsigned char *)s; *it; ++it) {
+            if (isalnum(*it)) {
+                if (n + 1 >= out_key_cap) {
+                    break;
+                }
+                out_key[n++] = (char)tolower(*it);
+                *written[p] = 1;
+                last_sep = false;
+            } else if (!last_sep && *written[p]) {
+                if (n + 1 >= out_key_cap) {
+                    break;
+                }
+                out_key[n++] = '_';
+                last_sep = true;
+            }
+        }
+
+        while (n > 0 && out_key[n - 1] == '_') {
+            n--;
+        }
+
+        if (p == 0) {
+            if (n + 1 >= out_key_cap) {
+                break;
+            }
+            out_key[n++] = '|';
+        }
+    }
+
+    if (duration_seconds >= 0 && n + 4 < out_key_cap) {
+        n += (size_t)snprintf(out_key + n,
+                              (n < out_key_cap) ? (out_key_cap - n) : 0,
+                              "|d%d",
+                              duration_seconds);
+        if (n >= out_key_cap) {
+            out_key[out_key_cap - 1] = '\0';
+        }
+    } else {
+        out_key[n] = '\0';
+    }
+
+    return (written_title || written_artist);
+}
+
 static int queue_cache_find_selected_pos_by_hint_locked(const char *title,
                                                         const char *artist,
                                                         const char *video_id)
@@ -962,6 +1066,256 @@ static int queue_cache_find_selected_pos_by_hint_locked(const char *title,
     }
 
     return (best_score > 0) ? best_pos : -1;
+}
+
+static void queue_cache_set_selected_pos_locked(int pos)
+{
+    if (pos < 0 || (size_t)pos >= s_queue_cache_count) {
+        return;
+    }
+    s_queue_cache_selected_pos = pos;
+    for (size_t i = 0; i < s_queue_cache_count; ++i) {
+        s_queue_cache_items[i].selected = ((int)i == pos);
+    }
+}
+
+static void queue_cache_align_selected_with_hint_locked(void)
+{
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
+        return;
+    }
+    int hint_pos = queue_cache_find_selected_pos_by_hint_locked(
+        s_track_hint_title,
+        s_track_hint_artist,
+        s_track_hint_video_id);
+    if (hint_pos >= 0 && hint_pos != s_queue_cache_selected_pos) {
+        queue_cache_set_selected_pos_locked(hint_pos);
+    }
+}
+
+static const char *resolve_stable_video_id_for_track(const char *title,
+                                                     const char *artist,
+                                                     const char *raw_video_id,
+                                                     char *out_video_id,
+                                                     size_t out_video_id_cap)
+{
+    if (!out_video_id || out_video_id_cap == 0) {
+        return NULL;
+    }
+    out_video_id[0] = '\0';
+
+    if (raw_video_id && raw_video_id[0] != '\0') {
+        copy_string_field(out_video_id, out_video_id_cap, raw_video_id);
+        return out_video_id;
+    }
+
+    // If this looks like the same currently tracked song, reuse known videoId.
+    bool same_title = text_equal_norm_alnum(title, s_track_hint_title);
+    bool same_artist = text_equal_norm_alnum(artist, s_track_hint_artist);
+    if ((same_title || same_artist) && s_track_hint_video_id[0] != '\0') {
+        copy_string_field(out_video_id, out_video_id_cap, s_track_hint_video_id);
+        return out_video_id;
+    }
+
+    // Fallback: resolve from queue cache by title/artist.
+    if (!queue_cache_lock(pdMS_TO_TICKS(50))) {
+        return NULL;
+    }
+
+    int pos = queue_cache_find_selected_pos_by_hint_locked(title, artist, NULL);
+    if (pos >= 0 && (size_t)pos < s_queue_cache_count) {
+        const ytmd_client_queue_item_t *item = &s_queue_cache_items[pos];
+        if (item->video_id[0] != '\0') {
+            copy_string_field(out_video_id, out_video_id_cap, item->video_id);
+        }
+    }
+    queue_cache_unlock();
+
+    return (out_video_id[0] != '\0') ? out_video_id : NULL;
+}
+
+static int resolve_queue_item_pos_for_track_locked(const char *title,
+                                                   const char *artist,
+                                                   const char *video_id,
+                                                   bool require_art_url)
+{
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
+        return -1;
+    }
+
+    if (video_id && video_id[0] != '\0') {
+        for (size_t i = 0; i < s_queue_cache_count; ++i) {
+            const ytmd_client_queue_item_t *item = &s_queue_cache_items[i];
+            if (require_art_url && item->art_url[0] == '\0') {
+                continue;
+            }
+            if (item->video_id[0] == '\0') {
+                continue;
+            }
+            if (strncmp(item->video_id, video_id, sizeof(item->video_id) - 1) == 0) {
+                return (int)i;
+            }
+        }
+    }
+
+    const bool has_title = (title && title[0] != '\0');
+    const bool has_artist = (artist && artist[0] != '\0');
+    if (has_title || has_artist) {
+        for (size_t i = 0; i < s_queue_cache_count; ++i) {
+            const ytmd_client_queue_item_t *item = &s_queue_cache_items[i];
+            if (require_art_url && item->art_url[0] == '\0') {
+                continue;
+            }
+
+            bool same_title = has_title && text_equal_norm_alnum(item->title, title);
+            bool same_artist = has_artist && text_equal_norm_alnum(item->artist, artist);
+            bool matched = false;
+            if (has_title && has_artist) {
+                matched = same_title && same_artist;
+            } else if (has_title) {
+                matched = same_title;
+            } else {
+                matched = same_artist;
+            }
+            if (matched) {
+                return (int)i;
+            }
+        }
+    }
+
+    if (s_queue_cache_selected_pos >= 0 &&
+        (size_t)s_queue_cache_selected_pos < s_queue_cache_count) {
+        const ytmd_client_queue_item_t *item = &s_queue_cache_items[s_queue_cache_selected_pos];
+        if (!require_art_url || item->art_url[0] != '\0') {
+            return s_queue_cache_selected_pos;
+        }
+    }
+
+    return -1;
+}
+
+static bool resolve_queue_art_url_for_track(const char *title,
+                                            const char *artist,
+                                            const char *video_id,
+                                            char *out_art_url,
+                                            size_t out_art_url_cap)
+{
+    if (!out_art_url || out_art_url_cap == 0) {
+        return false;
+    }
+    out_art_url[0] = '\0';
+
+    if (!queue_cache_lock(pdMS_TO_TICKS(50))) {
+        return false;
+    }
+
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
+        queue_cache_unlock();
+        return false;
+    }
+
+    queue_cache_align_selected_with_hint_locked();
+
+    int candidate_pos = resolve_queue_item_pos_for_track_locked(title, artist, video_id, true);
+
+    if (candidate_pos >= 0 && (size_t)candidate_pos < s_queue_cache_count) {
+        copy_string_field(out_art_url,
+                          out_art_url_cap,
+                          s_queue_cache_items[candidate_pos].art_url);
+    }
+    queue_cache_unlock();
+
+    if (out_art_url[0] == '\0') {
+        return false;
+    }
+    normalize_art_url(out_art_url, out_art_url_cap);
+    return true;
+}
+
+static bool resolve_queue_title_artist_for_track(const char *title,
+                                                 const char *artist,
+                                                 const char *video_id,
+                                                 char *out_title,
+                                                 size_t out_title_cap,
+                                                 char *out_artist,
+                                                 size_t out_artist_cap)
+{
+    if (out_title && out_title_cap > 0) {
+        out_title[0] = '\0';
+    }
+    if (out_artist && out_artist_cap > 0) {
+        out_artist[0] = '\0';
+    }
+
+    if (!queue_cache_lock(pdMS_TO_TICKS(50))) {
+        return false;
+    }
+
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
+        queue_cache_unlock();
+        return false;
+    }
+
+    queue_cache_align_selected_with_hint_locked();
+    int candidate_pos = resolve_queue_item_pos_for_track_locked(title, artist, video_id, false);
+    if (candidate_pos >= 0 && (size_t)candidate_pos < s_queue_cache_count) {
+        const ytmd_client_queue_item_t *item = &s_queue_cache_items[candidate_pos];
+        if (out_title && out_title_cap > 0) {
+            copy_string_field(out_title, out_title_cap, item->title);
+        }
+        if (out_artist && out_artist_cap > 0) {
+            copy_string_field(out_artist, out_artist_cap, item->artist);
+        }
+    }
+    queue_cache_unlock();
+
+    return ((out_title && out_title[0] != '\0') ||
+            (out_artist && out_artist[0] != '\0'));
+}
+
+static const char *resolve_queue_item_video_id_locked(const ytmd_client_queue_item_t *item,
+                                                      int rel_offset,
+                                                      char *out_video_id,
+                                                      size_t out_video_id_cap)
+{
+    if (!out_video_id || out_video_id_cap == 0) {
+        return NULL;
+    }
+    out_video_id[0] = '\0';
+    if (!item) {
+        return NULL;
+    }
+
+    if (item->video_id[0] != '\0') {
+        copy_string_field(out_video_id, out_video_id_cap, item->video_id);
+        return out_video_id;
+    }
+
+    // For current row, reuse known playing hint videoId if title/artist matches.
+    if (rel_offset == 0 && s_track_hint_video_id[0] != '\0') {
+        bool same_title = text_equal_norm_alnum(item->title, s_track_hint_title);
+        bool same_artist = text_equal_norm_alnum(item->artist, s_track_hint_artist);
+        if (same_title || same_artist) {
+            copy_string_field(out_video_id, out_video_id_cap, s_track_hint_video_id);
+            return out_video_id;
+        }
+    }
+
+    // Find sibling row with same text that has valid videoId.
+    for (size_t i = 0; i < s_queue_cache_count; ++i) {
+        const ytmd_client_queue_item_t *cand = &s_queue_cache_items[i];
+        if (cand == item || cand->video_id[0] == '\0') {
+            continue;
+        }
+        bool same_title = text_equal_norm_alnum(cand->title, item->title);
+        bool same_artist = text_equal_norm_alnum(cand->artist, item->artist);
+        if (same_title && same_artist) {
+            copy_string_field(out_video_id, out_video_id_cap, cand->video_id);
+            return out_video_id;
+        }
+    }
+
+    return NULL;
 }
 
 static bool queue_cache_copy_next_from_selected_locked(char *out_title,
@@ -1022,16 +1376,7 @@ static void queue_cache_set_track_hint(const char *title,
         return;
     }
 
-    int pos = queue_cache_find_selected_pos_by_hint_locked(
-        s_track_hint_title,
-        s_track_hint_artist,
-        s_track_hint_video_id);
-    if (pos >= 0) {
-        s_queue_cache_selected_pos = pos;
-        for (size_t i = 0; i < s_queue_cache_count; ++i) {
-            s_queue_cache_items[i].selected = ((int)i == pos);
-        }
-    }
+    queue_cache_align_selected_with_hint_locked();
 
     queue_cache_unlock();
 }
@@ -1047,18 +1392,7 @@ static bool fill_next_song_from_queue_cache(ytmd_client_playback_state_t *state)
     }
 
     bool ok = false;
-    if (s_queue_cache_selected_pos < 0) {
-        int hint_pos = queue_cache_find_selected_pos_by_hint_locked(
-            s_track_hint_title,
-            s_track_hint_artist,
-            s_track_hint_video_id);
-        if (hint_pos >= 0) {
-            s_queue_cache_selected_pos = hint_pos;
-            for (size_t i = 0; i < s_queue_cache_count; ++i) {
-                s_queue_cache_items[i].selected = ((int)i == hint_pos);
-            }
-        }
-    }
+    queue_cache_align_selected_with_hint_locked();
 
     if (queue_cache_copy_next_from_selected_locked(state->next_title,
                                                    sizeof(state->next_title),
@@ -1164,6 +1498,31 @@ static bool art_cache_has_key(const char *key, int w, int h)
         return false;
     }
     bool hit = art_cache_find_index(key, w, h) >= 0;
+    art_cache_unlock();
+    return hit;
+}
+
+static bool art_cache_has_key_any_size(const char *key)
+{
+    if (!key || key[0] == '\0') {
+        return false;
+    }
+    if (!art_cache_lock(pdMS_TO_TICKS(50))) {
+        return false;
+    }
+
+    bool hit = false;
+    for (int i = 0; i < YTMD_ART_CACHE_CAPACITY; ++i) {
+        const ytmd_art_cache_entry_t *entry = &s_art_cache[i];
+        if (!entry->valid || !entry->pixels) {
+            continue;
+        }
+        if (strncmp(entry->key, key, sizeof(entry->key) - 1) == 0) {
+            hit = true;
+            break;
+        }
+    }
+
     art_cache_unlock();
     return hit;
 }
@@ -1329,6 +1688,10 @@ static void prefetch_art_window_from_queue(const char *current_cache_key,
     }
 
     size_t target_count = 0;
+    const size_t max_prefetch_targets =
+        (current_cache_key && current_cache_key[0] != '\0' && YTMD_ART_CACHE_CAPACITY > 1)
+            ? (YTMD_ART_CACHE_CAPACITY - 1)
+            : YTMD_ART_CACHE_CAPACITY;
     bool cache_locked = false;
 
     if (!queue_cache_lock(pdMS_TO_TICKS(50))) {
@@ -1337,7 +1700,7 @@ static void prefetch_art_window_from_queue(const char *current_cache_key,
     }
     cache_locked = true;
 
-    if (!s_queue_cache_items || s_queue_cache_count == 0 || s_queue_cache_selected_pos < 0) {
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
         if (cache_locked) {
             queue_cache_unlock();
         }
@@ -1345,9 +1708,36 @@ static void prefetch_art_window_from_queue(const char *current_cache_key,
         return;
     }
 
-    for (int rel = -YTMD_ART_WINDOW_RADIUS; rel <= YTMD_ART_WINDOW_RADIUS; ++rel) {
-        int idx = s_queue_cache_selected_pos + rel;
+    queue_cache_align_selected_with_hint_locked();
+    if (s_queue_cache_selected_pos < 0) {
+        if (cache_locked) {
+            queue_cache_unlock();
+        }
+        free(targets);
+        return;
+    }
+
+    int range_start = s_queue_cache_selected_pos - YTMD_ART_WINDOW_RADIUS;
+    int range_end = s_queue_cache_selected_pos + YTMD_ART_WINDOW_RADIUS;
+    if (range_start < 0) {
+        int shift = -range_start;
+        range_start = 0;
+        range_end += shift;
+    }
+    if (range_end >= (int)s_queue_cache_count) {
+        int shift = range_end - ((int)s_queue_cache_count - 1);
+        range_end = (int)s_queue_cache_count - 1;
+        range_start -= shift;
+        if (range_start < 0) {
+            range_start = 0;
+        }
+    }
+
+    for (int idx = range_start; idx <= range_end; ++idx) {
         if (idx < 0 || (size_t)idx >= s_queue_cache_count) {
+            continue;
+        }
+        if (idx == s_queue_cache_selected_pos) {
             continue;
         }
 
@@ -1381,7 +1771,7 @@ static void prefetch_art_window_from_queue(const char *current_cache_key,
                 break;
             }
         }
-        if (duplicate || target_count >= YTMD_ART_CACHE_CAPACITY) {
+        if (duplicate || target_count >= max_prefetch_targets) {
             continue;
         }
 
@@ -3114,8 +3504,70 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
     }
 
     char *art_url = extract_art_url_from_song_json(json, json_len);
-    char *video_id = extract_video_id_from_song_json(json, json_len);
+    char *video_id_raw = extract_video_id_from_song_json(json, json_len);
+    char stable_video_id[32] = {0};
+    const char *video_id = resolve_stable_video_id_for_track(out_title,
+                                                             out_artist,
+                                                             video_id_raw,
+                                                             stable_video_id,
+                                                             sizeof(stable_video_id));
+    char queue_title[256] = {0};
+    char queue_artist[128] = {0};
+    bool has_queue_title_artist = resolve_queue_title_artist_for_track(out_title,
+                                                                       out_artist,
+                                                                       video_id,
+                                                                       queue_title,
+                                                                       sizeof(queue_title),
+                                                                       queue_artist,
+                                                                       sizeof(queue_artist));
+    if (has_queue_title_artist) {
+        bool title_changed = false;
+        bool artist_changed = false;
+        if (queue_title[0] != '\0' && out_title && out_title_cap > 0) {
+            title_changed = (strncmp(out_title, queue_title, out_title_cap - 1) != 0);
+            copy_string_field(out_title, out_title_cap, queue_title);
+        }
+        if (queue_artist[0] != '\0' && out_artist && out_artist_cap > 0) {
+            artist_changed = (strncmp(out_artist, queue_artist, out_artist_cap - 1) != 0);
+            copy_string_field(out_artist, out_artist_cap, queue_artist);
+        }
+        if (title_changed || artist_changed) {
+            ESP_LOGD(TAG, "Title/artist override: /queue ('%s' - '%s')",
+                     out_title ? out_title : "",
+                     out_artist ? out_artist : "");
+        }
+    }
+    int track_duration_seconds = -1;
+    if (out_playback_state && out_playback_state->has_song_duration_seconds) {
+        track_duration_seconds = out_playback_state->song_duration_seconds;
+    }
+    s_track_hint_duration_seconds = track_duration_seconds;
     queue_cache_set_track_hint(out_title, out_artist, video_id);
+    char queue_art_url[YTMD_ART_URL_MAX_LEN] = {0};
+    bool has_queue_art_url = resolve_queue_art_url_for_track(out_title,
+                                                             out_artist,
+                                                             video_id,
+                                                             queue_art_url,
+                                                             sizeof(queue_art_url));
+    bool force_queue_primary = false;
+    if (has_queue_art_url && art_url && strcmp(art_url, queue_art_url) == 0) {
+        force_queue_primary = true;
+    }
+    if (has_queue_art_url && (!art_url || strcmp(art_url, queue_art_url) != 0)) {
+        char *new_url = dup_cstr(queue_art_url);
+        if (new_url) {
+            free(art_url);
+            art_url = new_url;
+            force_queue_primary = true;
+            ESP_LOGD(TAG, "Art URL override: /queue (%s)", queue_art_url);
+        }
+    }
+    char track_identity_key[YTMD_ART_URL_MAX_LEN] = {0};
+    bool has_track_identity_key = build_track_identity_key(out_title,
+                                                           out_artist,
+                                                           track_duration_seconds,
+                                                           track_identity_key,
+                                                           sizeof(track_identity_key));
     free(json);
     json = NULL;
 
@@ -3132,7 +3584,7 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
 
     if (!art_url || art_url[0] == '\0') {
         free(art_url);
-        free(video_id);
+        free(video_id_raw);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -3142,17 +3594,37 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
         snprintf(art_cache_key, sizeof(art_cache_key), "%s", art_url);
     }
 
-    if (last_art_url && last_art_url[0] != '\0' && strncmp(art_cache_key, last_art_url, YTMD_ART_URL_MAX_LEN - 1) == 0) {
+    bool same_as_last = false;
+    if (last_art_url && last_art_url[0] != '\0') {
+        if (strncmp(art_cache_key, last_art_url, YTMD_ART_URL_MAX_LEN - 1) == 0) {
+            same_as_last = true;
+        } else if (has_track_identity_key &&
+                   strncmp(track_identity_key, last_art_url, YTMD_ART_URL_MAX_LEN - 1) == 0) {
+            same_as_last = true;
+        }
+    }
+    if (same_as_last) {
+        // Keep neighboring album-art cache warm even when the current image is unchanged.
+        schedule_prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb);
         free(art_url);
-        free(video_id);
+        free(video_id_raw);
         return ESP_ERR_NOT_FOUND;
     }
 
-    if (art_cache_copy_to_dst(art_cache_key, dst_w, dst_h, dst_rgb565)) {
-        snprintf(out_art_url, out_art_url_cap, "%s", art_cache_key);
+    bool cache_hit = art_cache_copy_to_dst(art_cache_key, dst_w, dst_h, dst_rgb565);
+    if (!cache_hit && has_track_identity_key) {
+        cache_hit = art_cache_copy_to_dst(track_identity_key, dst_w, dst_h, dst_rgb565);
+    }
+    if (cache_hit) {
+        if (has_track_identity_key) {
+            (void)art_cache_store_from_src(track_identity_key, dst_w, dst_h, dst_rgb565);
+            snprintf(out_art_url, out_art_url_cap, "%s", track_identity_key);
+        } else {
+            snprintf(out_art_url, out_art_url_cap, "%s", art_cache_key);
+        }
         schedule_prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb);
         free(art_url);
-        free(video_id);
+        free(video_id_raw);
         return ESP_OK;
     }
 
@@ -3160,7 +3632,8 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
     bool has_fallback = make_ytimg_fallback_url(video_id, fb_url, sizeof(fb_url));
     bool using_fallback_url = has_fallback && (strcmp(art_url, fb_url) == 0);
     const bool has_exact_square_hint = has_square_art_size_hint(art_url);
-    const bool prefer_fallback_first = has_fallback &&
+    const bool prefer_fallback_first = !force_queue_primary &&
+                                       has_fallback &&
                                        is_googleusercontent_art_url(art_url) &&
                                        !has_exact_square_hint;
     ESP_LOGI(TAG, "Art URL selected=%s cache_key=%s videoId=%s fallback=%s prefer_fallback_first=%d",
@@ -3204,7 +3677,7 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Art download failed: %s", art_url);
         free(art_url);
-        free(video_id);
+        free(video_id_raw);
         return err;
     }
 
@@ -3237,7 +3710,7 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
             ESP_LOGW(TAG, "No JPEG payload available after fallback");
             free(img);
             free(art_url);
-            free(video_id);
+            free(video_id_raw);
             return ESP_FAIL;
         }
     }
@@ -3269,7 +3742,7 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
     if (!ok) {
         ESP_LOGW(TAG, "JPEG decode failed: %s", art_url);
         free(art_url);
-        free(video_id);
+        free(video_id_raw);
         return ESP_FAIL;
     }
 
@@ -3287,11 +3760,18 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
     free(decoded);
 
     (void)art_cache_store_from_src(art_cache_key, dst_w, dst_h, dst_rgb565);
+    if (has_track_identity_key) {
+        (void)art_cache_store_from_src(track_identity_key, dst_w, dst_h, dst_rgb565);
+    }
     schedule_prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb);
 
-    snprintf(out_art_url, out_art_url_cap, "%s", art_cache_key);
+    if (has_track_identity_key) {
+        snprintf(out_art_url, out_art_url_cap, "%s", track_identity_key);
+    } else {
+        snprintf(out_art_url, out_art_url_cap, "%s", art_cache_key);
+    }
     free(art_url);
-    free(video_id);
+    free(video_id_raw);
 
     ESP_LOGI(TAG, "Album art decoded: src=%dx%d -> dst=%dx%d mode=crop zoom=%d%%", w, h, dst_w, dst_h, crop_zoom_percent);
     return ESP_OK;
@@ -3459,7 +3939,13 @@ esp_err_t ytmd_client_try_get_cached_art_by_queue_offset(int rel_offset,
         return ESP_ERR_TIMEOUT;
     }
 
-    if (!s_queue_cache_items || s_queue_cache_count == 0 || s_queue_cache_selected_pos < 0) {
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
+        queue_cache_unlock();
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    queue_cache_align_selected_with_hint_locked();
+    if (s_queue_cache_selected_pos < 0) {
         queue_cache_unlock();
         return ESP_ERR_NOT_FOUND;
     }
@@ -3471,16 +3957,29 @@ esp_err_t ytmd_client_try_get_cached_art_by_queue_offset(int rel_offset,
     }
 
     const ytmd_client_queue_item_t *item = &s_queue_cache_items[idx];
-    char art_key[YTMD_ART_URL_MAX_LEN] = {0};
-    if (item->video_id[0] != '\0') {
+    char art_key_video[YTMD_ART_URL_MAX_LEN] = {0};
+    char art_key_url[YTMD_ART_URL_MAX_LEN] = {0};
+    char art_key_track[YTMD_ART_URL_MAX_LEN] = {0};
+    char resolved_video_id[32] = {0};
+    const char *item_video_id = resolve_queue_item_video_id_locked(item,
+                                                                    rel_offset,
+                                                                    resolved_video_id,
+                                                                    sizeof(resolved_video_id));
+    if (item_video_id && item_video_id[0] != '\0') {
         char fallback_url[YTMD_ART_URL_MAX_LEN] = {0};
-        if (make_ytimg_fallback_url(item->video_id, fallback_url, sizeof(fallback_url))) {
-            build_art_cache_key(fallback_url, item->video_id, art_key, sizeof(art_key));
+        if (make_ytimg_fallback_url(item_video_id, fallback_url, sizeof(fallback_url))) {
+            build_art_cache_key(fallback_url, item_video_id, art_key_video, sizeof(art_key_video));
         }
     }
-    if (art_key[0] == '\0' && item->art_url[0] != '\0') {
-        build_art_cache_key(item->art_url, NULL, art_key, sizeof(art_key));
+    if (item->art_url[0] != '\0') {
+        build_art_cache_key(item->art_url, NULL, art_key_url, sizeof(art_key_url));
     }
+    int key_duration = (rel_offset == 0) ? s_track_hint_duration_seconds : -1;
+    (void)build_track_identity_key(item->title,
+                                   item->artist,
+                                   key_duration,
+                                   art_key_track,
+                                   sizeof(art_key_track));
 
     if (out_title && out_title_cap > 0) {
         snprintf(out_title, out_title_cap, "%s", item->title);
@@ -3490,17 +3989,112 @@ esp_err_t ytmd_client_try_get_cached_art_by_queue_offset(int rel_offset,
     }
     queue_cache_unlock();
 
-    if (art_key[0] == '\0') {
+    if (art_key_video[0] == '\0' && art_key_url[0] == '\0' && art_key_track[0] == '\0') {
         return ESP_ERR_NOT_FOUND;
     }
-    if (!art_cache_copy_to_dst(art_key, dst_w, dst_h, dst_rgb565)) {
+    const char *used_key = NULL;
+    if (art_key_video[0] != '\0' &&
+        art_cache_copy_to_dst(art_key_video, dst_w, dst_h, dst_rgb565)) {
+        used_key = art_key_video;
+    } else if (art_key_url[0] != '\0' &&
+               (art_key_video[0] == '\0' || strncmp(art_key_url, art_key_video, sizeof(art_key_url) - 1) != 0) &&
+               art_cache_copy_to_dst(art_key_url, dst_w, dst_h, dst_rgb565)) {
+        used_key = art_key_url;
+    } else if (art_key_track[0] != '\0' &&
+               (art_key_video[0] == '\0' || strncmp(art_key_track, art_key_video, sizeof(art_key_track) - 1) != 0) &&
+               (art_key_url[0] == '\0' || strncmp(art_key_track, art_key_url, sizeof(art_key_track) - 1) != 0) &&
+               art_cache_copy_to_dst(art_key_track, dst_w, dst_h, dst_rgb565)) {
+        used_key = art_key_track;
+    }
+    if (!used_key) {
         return ESP_ERR_NOT_FOUND;
     }
 
     if (out_art_key && out_art_key_cap > 0) {
-        snprintf(out_art_key, out_art_key_cap, "%s", art_key);
+        snprintf(out_art_key, out_art_key_cap, "%s", used_key);
     }
     return ESP_OK;
+}
+
+bool ytmd_client_has_cached_art_by_queue_offset(int rel_offset,
+                                                 char *out_art_key,
+                                                 size_t out_art_key_cap)
+{
+    if (out_art_key && out_art_key_cap > 0) {
+        out_art_key[0] = '\0';
+    }
+
+    if (!queue_cache_lock(pdMS_TO_TICKS(50))) {
+        return false;
+    }
+
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
+        queue_cache_unlock();
+        return false;
+    }
+
+    queue_cache_align_selected_with_hint_locked();
+    if (s_queue_cache_selected_pos < 0) {
+        queue_cache_unlock();
+        return false;
+    }
+
+    int idx = s_queue_cache_selected_pos + rel_offset;
+    if (idx < 0 || (size_t)idx >= s_queue_cache_count) {
+        queue_cache_unlock();
+        return false;
+    }
+
+    const ytmd_client_queue_item_t *item = &s_queue_cache_items[idx];
+    char art_key_video[YTMD_ART_URL_MAX_LEN] = {0};
+    char art_key_url[YTMD_ART_URL_MAX_LEN] = {0};
+    char art_key_track[YTMD_ART_URL_MAX_LEN] = {0};
+    char resolved_video_id[32] = {0};
+    const char *item_video_id = resolve_queue_item_video_id_locked(item,
+                                                                    rel_offset,
+                                                                    resolved_video_id,
+                                                                    sizeof(resolved_video_id));
+    if (item_video_id && item_video_id[0] != '\0') {
+        char fallback_url[YTMD_ART_URL_MAX_LEN] = {0};
+        if (make_ytimg_fallback_url(item_video_id, fallback_url, sizeof(fallback_url))) {
+            build_art_cache_key(fallback_url, item_video_id, art_key_video, sizeof(art_key_video));
+        }
+    }
+    if (item->art_url[0] != '\0') {
+        build_art_cache_key(item->art_url, NULL, art_key_url, sizeof(art_key_url));
+    }
+    int key_duration = (rel_offset == 0) ? s_track_hint_duration_seconds : -1;
+    (void)build_track_identity_key(item->title,
+                                   item->artist,
+                                   key_duration,
+                                   art_key_track,
+                                   sizeof(art_key_track));
+    queue_cache_unlock();
+
+    if (art_key_video[0] == '\0' && art_key_url[0] == '\0' && art_key_track[0] == '\0') {
+        return false;
+    }
+    const char *used_key = NULL;
+    if (art_key_video[0] != '\0' && art_cache_has_key_any_size(art_key_video)) {
+        used_key = art_key_video;
+    } else if (art_key_url[0] != '\0' &&
+               (art_key_video[0] == '\0' || strncmp(art_key_url, art_key_video, sizeof(art_key_url) - 1) != 0) &&
+               art_cache_has_key_any_size(art_key_url)) {
+        used_key = art_key_url;
+    } else if (art_key_track[0] != '\0' &&
+               (art_key_video[0] == '\0' || strncmp(art_key_track, art_key_video, sizeof(art_key_track) - 1) != 0) &&
+               (art_key_url[0] == '\0' || strncmp(art_key_track, art_key_url, sizeof(art_key_track) - 1) != 0) &&
+               art_cache_has_key_any_size(art_key_track)) {
+        used_key = art_key_track;
+    }
+    if (!used_key) {
+        return false;
+    }
+
+    if (out_art_key && out_art_key_cap > 0) {
+        snprintf(out_art_key, out_art_key_cap, "%s", used_key);
+    }
+    return true;
 }
 
 esp_err_t ytmd_client_enrich_playback_state(ytmd_client_playback_state_t *state,

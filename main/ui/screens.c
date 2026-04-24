@@ -220,8 +220,48 @@ void create_screen_main() {
             objects.golist = obj;
             lv_obj_set_pos(obj, 709, -8);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_image_set_src(obj, &img_list_enable);
+            lv_image_set_src(obj, &img_list_disable);
             lv_image_set_scale(obj, 125);
+        }
+        {
+            // load5
+            lv_obj_t *obj = lv_image_create(parent_obj);
+            objects.load5 = obj;
+            lv_obj_set_pos(obj, 99, 17);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_image_set_src(obj, &img_circle_1);
+        }
+        {
+            // load4
+            lv_obj_t *obj = lv_image_create(parent_obj);
+            objects.load4 = obj;
+            lv_obj_set_pos(obj, 80, 17);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_image_set_src(obj, &img_circle_1);
+        }
+        {
+            // load3
+            lv_obj_t *obj = lv_image_create(parent_obj);
+            objects.load3 = obj;
+            lv_obj_set_pos(obj, 61, 17);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_image_set_src(obj, &img_circle_1);
+        }
+        {
+            // load2
+            lv_obj_t *obj = lv_image_create(parent_obj);
+            objects.load2 = obj;
+            lv_obj_set_pos(obj, 41, 17);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_image_set_src(obj, &img_circle_1);
+        }
+        {
+            // load1
+            lv_obj_t *obj = lv_image_create(parent_obj);
+            objects.load1 = obj;
+            lv_obj_set_pos(obj, 22, 17);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_image_set_src(obj, &img_circle_1);
         }
     }
     
