@@ -34,11 +34,78 @@
 #include "ytmd_client.h"
 
 static const char *TAG = "USB_NCM_YTMD_ART";
+#define YTMD_AUX_STATE_ENRICH_INTERVAL_MS 1500
+#define YTMD_PREV_TRACK_THRESHOLD_SEC 5
 
 static char s_last_art_url[YTMD_ART_URL_MAX_LEN] = {0};
+static TaskHandle_t s_album_task_handle = NULL;
 
 /* ?¨ÏÉù ?ÅÌÉú ??ytmd_client ?ïÏû• ????Íµ¨Ï°∞Ï≤¥Î? Ï±ÑÏõå player_ui_update() ???ÑÎã¨ */
 static ytmd_player_state_t s_player_state = {0};
+static bool update_text_field(char *dst, size_t dst_cap, const char *src);
+static esp_err_t apply_cached_art_from_queue_offset(int rel_offset, const char *reason)
+{
+    char cached_art_key[YTMD_ART_URL_MAX_LEN] = {0};
+    char cached_title[PLAYER_TITLE_MAX_LEN] = {0};
+    char cached_artist[PLAYER_ARTIST_MAX_LEN] = {0};
+    esp_err_t err = ytmd_client_try_get_cached_art_by_queue_offset(
+        rel_offset,
+        ui_display_get_album_buffer(),
+        UI_ALBUM_ART_W,
+        UI_ALBUM_ART_H,
+        cached_art_key,
+        sizeof(cached_art_key),
+        cached_title,
+        sizeof(cached_title),
+        cached_artist,
+        sizeof(cached_artist));
+    if (err != ESP_OK) {
+        return err;
+    }
+    bool text_changed = false;
+    text_changed |= update_text_field(s_player_state.title, sizeof(s_player_state.title), cached_title);
+    text_changed |= update_text_field(s_player_state.artist, sizeof(s_player_state.artist), cached_artist);
+    ui_display_present_album_art();
+    player_ui_update_album_art();
+    snprintf(s_last_art_url, sizeof(s_last_art_url), "%s", cached_art_key);
+    if (text_changed) {
+        player_ui_update(&s_player_state);
+    }
+    ESP_LOGI(TAG, "Optimistic album art (%s): %s", reason ? reason : "queue", s_last_art_url);
+    return ESP_OK;
+}
+static void request_album_refresh_immediate(void)
+{
+    if (s_album_task_handle) {
+        xTaskNotifyGive(s_album_task_handle);
+    }
+}
+static void ui_cmd_prev(void *user_ctx)
+{
+    (void)user_ctx;
+    esp_err_t err = ytmd_client_cmd_prev();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "CMD(prev): sent");
+        bool likely_prev_track = !s_player_state.has_elapsed_seconds || s_player_state.elapsed_seconds < YTMD_PREV_TRACK_THRESHOLD_SEC;
+        if (likely_prev_track) {
+            (void)apply_cached_art_from_queue_offset(-1, "prev");
+        }
+        request_album_refresh_immediate();
+    } else {
+        ESP_LOGW(TAG, "CMD(prev) failed: %s", esp_err_to_name(err));
+    }
+}
+static void ui_cmd_next(void *user_ctx)
+{
+    (void)user_ctx;
+    esp_err_t err = ytmd_client_cmd_next();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "CMD(next): sent");
+        request_album_refresh_immediate();
+    } else {
+        ESP_LOGW(TAG, "CMD(next) failed: %s", esp_err_to_name(err));
+    }
+}
 
 static bool update_text_field(char *dst, size_t dst_cap, const char *src)
 {
@@ -265,6 +332,7 @@ static void album_task(void *arg)
     char new_title[PLAYER_TITLE_MAX_LEN] = {0};
     char new_artist[PLAYER_ARTIST_MAX_LEN] = {0};
     ytmd_client_playback_state_t playback_state = {0};
+    uint32_t last_aux_enrich_tick = 0;
 
     while (1) {
         if (!ncm_net_wait_ready(wait_tick)) {
@@ -317,7 +385,17 @@ static void album_task(void *arg)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(YTMD_POLL_INTERVAL_MS));
+        uint32_t now_tick = (uint32_t)xTaskGetTickCount();
+        if ((now_tick - last_aux_enrich_tick) >= pdMS_TO_TICKS(YTMD_AUX_STATE_ENRICH_INTERVAL_MS)) {
+            ytmd_client_playback_state_t aux_state = playback_state;
+            if (ytmd_client_enrich_playback_state(&aux_state, ncm_net_log_diagnostics) == ESP_OK) {
+                if (apply_playback_state_to_player(&aux_state)) {
+                    player_ui_update(&s_player_state);
+                }
+            }
+            last_aux_enrich_tick = now_tick;
+        }
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(YTMD_POLL_INTERVAL_MS));
     }
 }
 void app_main(void)
@@ -333,6 +411,11 @@ void app_main(void)
     ESP_ERROR_CHECK(ncm_net_init());
     ESP_ERROR_CHECK(ui_display_init());
     player_ui_init();
+    const player_ui_control_ops_t control_ops = {
+        .prev = ui_cmd_prev,
+        .next = ui_cmd_next,
+    };
+    player_ui_set_control_ops(&control_ops, NULL);
     log_memory_capacity_report();
 
     BaseType_t ok = xTaskCreate(
@@ -341,7 +424,7 @@ void app_main(void)
         12288,
         NULL,
         5,
-        NULL);
+        &s_album_task_handle);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "Failed to create album_task");
     }

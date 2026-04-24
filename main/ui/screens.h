@@ -30,6 +30,9 @@ typedef struct _objects_t {
     lv_obj_t *song_like;
     lv_obj_t *next;
     lv_obj_t *next_song;
+    lv_obj_t *seekbar;
+    lv_obj_t *time_now;
+    lv_obj_t *total_time;
 } objects_t;
 
 extern objects_t objects;

@@ -7,7 +7,7 @@
 #include "esp_err.h"
 
 #define YTMD_ART_URL_MAX_LEN 1024
-#define YTMD_POLL_INTERVAL_MS 2000
+#define YTMD_POLL_INTERVAL_MS 500
 
 typedef enum {
     YTMD_CLIENT_REPEAT_NONE = 0,
@@ -74,6 +74,7 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
 esp_err_t ytmd_client_cmd_play_pause(void);
 esp_err_t ytmd_client_cmd_prev(void);
 esp_err_t ytmd_client_cmd_next(void);
+esp_err_t ytmd_client_cmd_seek_to(int seconds);
 esp_err_t ytmd_client_cmd_toggle_shuffle(void);
 esp_err_t ytmd_client_cmd_cycle_repeat(void);
 esp_err_t ytmd_client_cmd_toggle_like(void);
@@ -84,3 +85,17 @@ esp_err_t ytmd_client_queue_cache_get(ytmd_client_queue_item_t *out_items,
                                       size_t *out_copied,
                                       size_t *out_total,
                                       int *out_selected_pos);
+
+esp_err_t ytmd_client_try_get_cached_art_by_queue_offset(int rel_offset,
+                                                         uint16_t *dst_rgb565,
+                                                         int dst_w,
+                                                         int dst_h,
+                                                         char *out_art_key,
+                                                         size_t out_art_key_cap,
+                                                         char *out_title,
+                                                         size_t out_title_cap,
+                                                         char *out_artist,
+                                                         size_t out_artist_cap);
+
+esp_err_t ytmd_client_enrich_playback_state(ytmd_client_playback_state_t *state,
+                                            ytmd_network_diag_cb_t net_diag_cb);

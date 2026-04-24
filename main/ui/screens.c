@@ -53,6 +53,9 @@ void create_screen_main() {
             objects.albumart_pan = obj;
             lv_obj_set_pos(obj, 20, 40);
             lv_obj_set_size(obj, 410, 410);
+            lv_obj_set_style_bg_color(obj, lv_color_hex(0x790f0f), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_grad_color(obj, lv_color_hex(0x790f0f), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_color(obj, lv_color_hex(0x790f0f), LV_PART_MAIN | LV_STATE_DEFAULT);
         }
         {
             // album_art
@@ -65,7 +68,7 @@ void create_screen_main() {
             // song_title
             lv_obj_t *obj = lv_label_create(parent_obj);
             objects.song_title = obj;
-            lv_obj_set_pos(obj, 450, 67);
+            lv_obj_set_pos(obj, 443, 86);
             lv_obj_set_size(obj, 320, 60);
             lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL_CIRCULAR);
             lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -79,7 +82,7 @@ void create_screen_main() {
             // song_artist
             lv_obj_t *obj = lv_label_create(parent_obj);
             objects.song_artist = obj;
-            lv_obj_set_pos(obj, 450, 125);
+            lv_obj_set_pos(obj, 442, 61);
             lv_obj_set_size(obj, 320, 40);
             lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL_CIRCULAR);
             lv_obj_set_style_anim(obj, get_anim(), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -87,13 +90,14 @@ void create_screen_main() {
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_font(obj, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_pad_top(obj, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_anim_duration(obj, 30000, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "AAAAAAAAAAAAAAAAAAAAAAA");
         }
         {
             // play
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.play = obj;
-            lv_obj_set_pos(obj, 567, 187);
+            lv_obj_set_pos(obj, 557, 213);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_play);
         }
@@ -101,23 +105,25 @@ void create_screen_main() {
             // skip_next
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.skip_next = obj;
-            lv_obj_set_pos(obj, 710, 212);
+            lv_obj_set_pos(obj, 663, 238);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_skip_next_);
+            lv_image_set_scale(obj, 200);
         }
         {
             // skip_prev
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.skip_prev = obj;
-            lv_obj_set_pos(obj, 474, 212);
+            lv_obj_set_pos(obj, 501, 238);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_skip_previous);
+            lv_image_set_scale(obj, 200);
         }
         {
             // song_random
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_random = obj;
-            lv_obj_set_pos(obj, 452, 302);
+            lv_obj_set_pos(obj, 424, 223);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_shuffle_disable);
             lv_image_set_scale(obj, 100);
@@ -126,7 +132,7 @@ void create_screen_main() {
             // song_repeat
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_repeat = obj;
-            lv_obj_set_pos(obj, 531, 302);
+            lv_obj_set_pos(obj, 709, 223);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_repeat_disable);
             lv_image_set_scale(obj, 100);
@@ -135,7 +141,7 @@ void create_screen_main() {
             // song_senti
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_senti = obj;
-            lv_obj_set_pos(obj, 611, 302);
+            lv_obj_set_pos(obj, 455, 303);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_thumb_down_disable);
             lv_image_set_scale(obj, 100);
@@ -144,33 +150,34 @@ void create_screen_main() {
             // song_like
             lv_obj_t *obj = lv_image_create(parent_obj);
             objects.song_like = obj;
-            lv_obj_set_pos(obj, 690, 302);
+            lv_obj_set_pos(obj, 683, 303);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_image_set_src(obj, &img_thumb_up_disable);
             lv_image_set_scale(obj, 100);
         }
         {
             lv_obj_t *obj = lv_label_create(parent_obj);
-            lv_obj_set_pos(obj, 22, 9);
+            lv_obj_set_pos(obj, 22, 455);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_obj_set_style_text_font(obj, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "YouTube Music Desktop Controler");
         }
         {
             // next
             lv_obj_t *obj = lv_label_create(parent_obj);
             objects.next = obj;
-            lv_obj_set_pos(obj, 443, 410);
-            lv_obj_set_size(obj, LV_SIZE_CONTENT, 30);
+            lv_obj_set_pos(obj, 440, 420);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, 40);
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_font(obj, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_top(obj, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "Next");
         }
         {
             // next_song
             lv_obj_t *obj = lv_label_create(parent_obj);
             objects.next_song = obj;
-            lv_obj_set_pos(obj, 507, 410);
+            lv_obj_set_pos(obj, 515, 420);
             lv_obj_set_size(obj, 248, 40);
             lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL_CIRCULAR);
             lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -178,7 +185,34 @@ void create_screen_main() {
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_text_font(obj, &lv_font_montserrat_22, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_pad_top(obj, 1, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_anim_duration(obj, 30000, LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "SSSSSSSSSSSSSSSSSSSSSS");
+        }
+        {
+            // seekbar
+            lv_obj_t *obj = lv_bar_create(parent_obj);
+            objects.seekbar = obj;
+            lv_obj_set_pos(obj, 446, 157);
+            lv_obj_set_size(obj, 317, 10);
+            lv_bar_set_value(obj, 25, LV_ANIM_OFF);
+        }
+        {
+            // time_now
+            lv_obj_t *obj = lv_label_create(parent_obj);
+            objects.time_now = obj;
+            lv_obj_set_pos(obj, 446, 175);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_label_set_text_static(obj, "99:99");
+        }
+        {
+            // total_time
+            lv_obj_t *obj = lv_label_create(parent_obj);
+            objects.total_time = obj;
+            lv_obj_set_pos(obj, 723, 175);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_label_set_text_static(obj, "99:99");
         }
     }
     

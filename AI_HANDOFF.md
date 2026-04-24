@@ -4,81 +4,88 @@
 
 ## 1) 세션 메타
 - 프로젝트: ESP32P4_RNDIS_or_NCM
-- 최종 업데이트(KST): 2026-04-24 02:39
+- 최종 업데이트(KST): 2026-04-24 17:52
 - 브랜치: YTMD
 - HEAD: e056f64 (`이미지리소스정리_플레이어UI개선`)
 - 타겟/SDK: esp32p4 / ESP-IDF v6.0
-- 워킹트리 상태: clean (미커밋 변경 없음)
+- 워킹트리 상태: 변경 있음 (커밋 전)
+- 작업/검증 범위: 빌드 
 
 ## 2) 현재 목표
-- 목표: YTMD 플레이어 UI 반응성/표시 안정화 (재생상태, next/prev 피드백, 앨범아트 전환)
-- 현재 이슈: 곡 전환 체감이 약 2초 (poll 주기 영향)
+- 목표: 앨범아트 전환 지연 감소 + `next_song`(다음곡 타이틀/가수 라벨) 정확도 개선
+- 현재 이슈: `/queue` 파싱 결과가 실제 다음곡과 다른 케이스 존재
 
 ## 3) 이번까지 완료된 핵심 작업
-- `isPaused` 반영으로 중앙 play/pause 아이콘 상태 동기화
-- 부팅 직후에도 playback 상태가 UI에 반영되도록 로직 수정
-- next/prev 클릭 시 push 이미지 적용 + 곡 변경/seek 조건 충족 시 원복
-- next song 파싱/표시 안정화 (`/api/v1/queue` 기반)
-- repeat/shuffle/like/dislike 엔드포인트 매핑 정리
-- 앨범아트 모서리 라운드 처리 안정화
-- 전체 배경에 앨범아트 dim 레이어 추가 (어둡게/흐린 느낌)
-- `Playback state updated` 과다 로그 주석 처리
-- 앨범아트 5장 캐시 추가 (PSRAM 우선)
-- queue 기준 `이전2-이전-현재-다음-다다음` 프리패치 구현
-- prefetch에서 발생한 stack protection fault 수정 (대형 로컬 버퍼 -> heap 할당)
-- prefetch JPEG 경로 zoom 규칙 보정 (비정사각 썸네일이 작아 보이는 문제 완화)
+- clean+build 시작 스크립트 추가
+  - `tools/start_clean_build.ps1`
+  - `-ResetManagedComponents` 옵션 지원
+- 폴링 주기 단축
+  - `YTMD_POLL_INTERVAL_MS: 2000 -> 500`
+- 앨범아트 프리패치 비동기화
+  - prefetch worker task + 요청 coalescing
+  - cache lock(뮤텍스) 추가
+- album task 즉시 깨우기 경로 추가
+  - `ulTaskNotifyTake` 기반 대기
+  - next/prev 명령 후 즉시 refresh notify
+- 보조 상태(enrich) 주기 분리
+  - `YTMD_AUX_STATE_ENRICH_INTERVAL_MS = 1500`
+- `next_song` 라벨 경로 개선 (핵심)
+  - `/song` 수신 시 현재곡 힌트(title/artist/videoId) 저장
+  - `/queue` 파싱 시 리스트를 먼저 끝까지 구성
+  - 중복 renderer(동일 videoId/동일 row+텍스트) 제거
+  - `selected` 미검출 시 힌트 매칭으로 현재 인덱스 복원
+  - next 선택 시 `selected+1`만 쓰지 않고
+    `selected row index`보다 큰 항목 중 최소 row 우선 선택
+  - 디버그 로그 추가:
+    - `NEXT: queue-cache resolve selected_pos=... count=... hint_title=... hint_artist=... hint_vid=...`
 
-## 4) 성능/동작 메모
-- 체감 2초 지연의 주원인: `YTMD_POLL_INTERVAL_MS = 2000`
-- 현재는 poll 기반이라, 상태 반영 최소 단위가 2초에 가까움
-- 더 줄이려면 다음 중 하나 필요
-- 옵션 A: poll 주기 축소 (예: 500~1000ms, 네트워크 요청 증가)
-- 옵션 B: 명령 직후 optimistic UI + 백그라운드 정합
-- 옵션 C: 가능하면 push/event 기반 API 사용
+## 4) 현재 남은 검증 포인트
+- 사용자 보고:
+  - `NEXT: parsed from /queue => '...'`
+- 조치:
+  - 위 파서/선택 로직을 재설계하여 반영 완료
+- 미완료 이유:
+  - 실기기 업로드가 COM26 점유로 실패하여 현장 검증 미진행
 
-## 5) 앨범아트 저장 구조(현재)
-- 파일 저장 아님, RAM/PSRAM 캐시
-- 표시 버퍼: `s_album_frame` (400x400 RGB565)
-- 추가 캐시: 5-slot LRU (`YTMD_ART_CACHE_CAPACITY 5`)
-- 프리패치 범위: selected 기준 -2..+2
+## 5) 빌드/업로드 결과
+- build: 여러 차례 성공
+- app-flash: 실패
+  - 에러: `Could not open COM26` / `PermissionError(13, access denied)`
 
-## 6) 오늘 확인한 장애와 조치
-- 증상: Guru Meditation / Stack protection fault in `prefetch_art_window_from_queue`
-- 원인: 함수 내부 대형 로컬 배열(`targets`)로 task stack 초과
-- 조치: heap/PSRAM 동적할당으로 전환 + 모든 조기 리턴 경로 free 처리
-- 상태: 빌드 통과, 재발 방지 패치 반영
-
-## 7) 내일 바로 할 일 (우선순위)
-- 1) 실기기에서 곡 넘김 시 체감 지연 측정 (현재 약 2초)
-- 2) poll 주기 조정 실험 (`2000 -> 1000 -> 500`) 및 네트워크/CPU 영향 비교
-- 3) next/prev push 이미지 원복 타이밍 체감 확인
-- 4) 배경 앨범아트 dim 강도(현재값) 미세조정
-- 5) 필요 시 캐시 hit/miss 로그를 짧게 추가해 실제 prefetch 효율 측정
-
-## 8) 주요 파일
-- `main/main.c`
-- `main/player_ui.c`
+## 6) 주요 파일 변경 (현재 세션)
 - `main/ytmd_client.c`
+  - next_song 파서/큐 캐시/힌트 매칭/선택 로직 개선
+  - next 명령 fallback 경로 보강
 - `main/ytmd_client.h`
-- `main/ui_display.c`
-- `main/ui/screens.c`
-- `main/CMakeLists.txt`
-- `sdkconfig`
+  - poll interval 및 신규 API 선언 반영
+- `main/main.c`
+  - album task notify 기반 대기/즉시 refresh 경로
+  - UI control ops(prev/next) 커스텀 연결
+- `tools/start_clean_build.ps1` (신규)
+- `AI_HANDOFF.md` (본 문서)
 
-## 9) 자주 쓰는 명령
+## 7) 다음 세션 즉시 할 일
+1. COM26 점유 해제 후 `app-flash` 성공시킴
+2. next_song 검증 로그 2줄 확보
+   - `NEXT: queue-cache resolve ...`
+  - `NEXT: parsed from /queue => '...'`
+3. 실제 UI `next_song` 라벨과 로그를 대조
+4. 여전히 불일치 시 `/queue` payload에서 selected/row/videoId 샘플 캡처 후 매칭 규칙 2차 보정
+
+## 8) 자주 쓰는 명령
 ```bash
-# build
-idf.py build
+# 시작 준비: clean + build
+powershell -ExecutionPolicy Bypass -File .\tools\start_clean_build.ps1
 
-# app만 flash
-idf.py -p <PORT> app-flash
+# managed_components까지 초기화가 필요할 때
+powershell -ExecutionPolicy Bypass -File .\tools\start_clean_build.ps1 -ResetManagedComponents
 
-# monitor
-idf.py -p <PORT> monitor
+# 빌드
+. C:\esp\v6.0\esp-idf\export.ps1; idf.py -B build_DEV_TEAM_2 build
 
-# app + monitor
-idf.py -p <PORT> flash monitor
+# 업로드
+. C:\esp\v6.0\esp-idf\export.ps1; idf.py -B build_DEV_TEAM_2 -p COM26 app-flash
 ```
 
-## 10) 다음 세션 시작 프롬프트 (복붙용)
-"AI_HANDOFF.md 기준으로 이어서 진행. 우선 poll 2초 지연을 줄이는 실험(1000ms/500ms)부터 하고, next/prev push 이미지 전환 체감과 앨범아트 prefetch hit율을 확인해줘."
+## 9) 다음 세션 시작 프롬프트 (복붙용)
+"AI_HANDOFF.md 기준으로 이어서 진행. COM26 점유 해제 후 app-flash부터 하고, next_song 라벨이 실제 다음곡과 일치하는지 로그(`queue-cache resolve`, `parsed from /queue`) 기준으로 검증해줘."

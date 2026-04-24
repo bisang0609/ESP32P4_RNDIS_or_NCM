@@ -71,6 +71,7 @@ void player_ui_control_toggle_dislike(void);
 void ytmd_cmd_play_pause(void);
 void ytmd_cmd_next(void);
 void ytmd_cmd_prev(void);
+void ytmd_cmd_seek_to(int seconds);
 void ytmd_cmd_toggle_shuffle(void);
 void ytmd_cmd_cycle_repeat(void);
 void ytmd_cmd_toggle_like(void);
