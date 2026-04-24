@@ -56,6 +56,14 @@ typedef struct {
     char art_url[YTMD_ART_URL_MAX_LEN];
 } ytmd_client_queue_item_t;
 
+typedef struct {
+    int index;
+    bool selected;
+    char title[256];
+    char artist[128];
+    char video_id[32];
+} ytmd_client_queue_compact_item_t;
+
 typedef void (*ytmd_network_diag_cb_t)(const char *url);
 
 esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
@@ -79,12 +87,21 @@ esp_err_t ytmd_client_cmd_toggle_shuffle(void);
 esp_err_t ytmd_client_cmd_cycle_repeat(void);
 esp_err_t ytmd_client_cmd_toggle_like(void);
 esp_err_t ytmd_client_cmd_toggle_dislike(void);
+esp_err_t ytmd_client_cmd_play_queue_index(int index);
+esp_err_t ytmd_client_cmd_play_video_id(const char *video_id);
+
+esp_err_t ytmd_client_refresh_queue_cache(ytmd_network_diag_cb_t net_diag_cb);
 
 esp_err_t ytmd_client_queue_cache_get(ytmd_client_queue_item_t *out_items,
                                       size_t max_items,
                                       size_t *out_copied,
                                       size_t *out_total,
                                       int *out_selected_pos);
+esp_err_t ytmd_client_queue_cache_get_compact(ytmd_client_queue_compact_item_t *out_items,
+                                              size_t max_items,
+                                              size_t *out_copied,
+                                              size_t *out_total,
+                                              int *out_selected_pos);
 
 esp_err_t ytmd_client_try_get_cached_art_by_queue_offset(int rel_offset,
                                                          uint16_t *dst_rgb565,

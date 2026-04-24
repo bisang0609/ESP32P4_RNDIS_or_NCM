@@ -17,6 +17,8 @@ set(UI_IMAGE_SRCS
     "ui/images/ui_image_thumb_down_enable.c"
     "ui/images/ui_image_thumb_up_disable.c"
     "ui/images/ui_image_thumb_up_enable.c"
+    "ui/images/ui_image_back_page.c"
+    "ui/images/ui_image_next_page.c"
 )
 
 idf_component_register(

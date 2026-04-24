@@ -239,11 +239,6 @@ void create_screen_playlist() {
     {
         lv_obj_t *parent_obj = obj;
         {
-            lv_obj_t *obj = lv_obj_create(parent_obj);
-            lv_obj_set_pos(obj, 54, 76);
-            lv_obj_set_size(obj, 692, 384);
-        }
-        {
             // playlist_area
             lv_obj_t *obj = lv_obj_create(parent_obj);
             objects.playlist_area = obj;
@@ -280,6 +275,29 @@ void create_screen_playlist() {
             lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL_CIRCULAR);
             lv_obj_set_style_pad_top(obj, 1, LV_PART_MAIN | LV_STATE_SCROLLED);
             lv_label_set_text_static(obj, "Title-Songs");
+        }
+        {
+            // next_page
+            lv_obj_t *obj = lv_image_create(parent_obj);
+            objects.next_page = obj;
+            lv_obj_set_pos(obj, 721, 18);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_image_set_src(obj, &img_next_page);
+        }
+        {
+            // back_page
+            lv_obj_t *obj = lv_image_create(parent_obj);
+            objects.back_page = obj;
+            lv_obj_set_pos(obj, 638, 18);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_image_set_src(obj, &img_back_page);
+        }
+        {
+            lv_obj_t *obj = lv_label_create(parent_obj);
+            lv_obj_set_pos(obj, 672, 23);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_18, LV_PART_MAIN | LV_STATE_SCROLLED);
+            lv_label_set_text_static(obj, "PAGE");
         }
     }
     

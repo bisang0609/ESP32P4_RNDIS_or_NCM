@@ -39,6 +39,8 @@ typedef struct _objects_t {
     lv_obj_t *playlist_area;
     lv_obj_t *return_main;
     lv_obj_t *nowplay;
+    lv_obj_t *next_page;
+    lv_obj_t *back_page;
 } objects_t;
 
 extern objects_t objects;

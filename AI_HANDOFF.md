@@ -114,3 +114,20 @@ powershell -ExecutionPolicy Bypass -File .\tools\start_clean_build.ps1 -ResetMan
   - Result: PASS
 - Current checkpoint commit:
   - `d4e86c5` (`feat: wire playlist scene navigation and nowplay label`)
+
+## Session Update (2026-04-25, checkpoint 2)
+
+- User rule reinforced: do not manually edit EEZ-generated files in `main/ui/*`.
+- Playlist behavior updates (implemented in runtime code):
+  - right-side row play button color set to white
+  - now-playing marker shown on the left in green
+  - right-side play button hidden for the now-playing row
+  - selected row highlight changed from green fill to green outline
+  - page change resets playlist scroll position to top
+  - highlight marquee animation duration set to 30000 ms
+  - now-playing title text color changed to green for better visibility
+- Queue/playlist rendering improvements kept:
+  - duplicate titles filtered
+  - paging enabled (10 items per page)
+  - next/back page button visibility by page boundary
+- Build policy for this period: no build execution (per user request).

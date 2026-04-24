@@ -1,6 +1,6 @@
 #include "images.h"
 
-const ext_img_desc_t images[18] = {
+const ext_img_desc_t images[20] = {
     { "skip_previous", &img_skip_previous },
     { "skip_next_", &img_skip_next_ },
     { "playlist", &img_playlist },
@@ -19,4 +19,6 @@ const ext_img_desc_t images[18] = {
     { "skip_next_push", &img_skip_next_push },
     { "skip_previous_push", &img_skip_previous_push },
     { "arrow_left", &img_arrow_left },
+    { "next_page", &img_next_page },
+    { "back_page", &img_back_page },
 };

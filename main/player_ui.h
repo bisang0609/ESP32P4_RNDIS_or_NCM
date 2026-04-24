@@ -68,6 +68,10 @@ void player_ui_control_cycle_repeat(void);
 void player_ui_control_toggle_like(void);
 void player_ui_control_toggle_dislike(void);
 
+void playlist_clear_rows(void);
+void playlist_set_selected(int index);
+void playlist_set_now_playing(int index);
+
 void ytmd_cmd_play_pause(void);
 void ytmd_cmd_next(void);
 void ytmd_cmd_prev(void);

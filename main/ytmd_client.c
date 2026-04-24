@@ -2770,14 +2770,18 @@ static esp_err_t http_get_alloc(const char *url,
     return ESP_OK;
 }
 
-static esp_err_t http_post_json(const char *url, const char *body, int timeout_ms, ytmd_network_diag_cb_t net_diag_cb)
+static esp_err_t http_send_json(const char *url,
+                                esp_http_client_method_t method,
+                                const char *body,
+                                int timeout_ms,
+                                ytmd_network_diag_cb_t net_diag_cb)
 {
     ESP_RETURN_ON_FALSE(url, ESP_ERR_INVALID_ARG, TAG, "url is NULL");
 
     const char *payload = body ? body : "{}";
     esp_http_client_config_t cfg = {
         .url = url,
-        .method = HTTP_METHOD_POST,
+        .method = method,
         .timeout_ms = timeout_ms,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .buffer_size = 1024,
@@ -2791,7 +2795,10 @@ static esp_err_t http_post_json(const char *url, const char *body, int timeout_m
 
     esp_err_t err = esp_http_client_open(client, (int)strlen(payload));
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "HTTP POST open failed for %s: %s", url, esp_err_to_name(err));
+        ESP_LOGW(TAG, "HTTP %s open failed for %s: %s",
+                 method == HTTP_METHOD_PATCH ? "PATCH" : "POST",
+                 url,
+                 esp_err_to_name(err));
         if (url && strncmp(url, "https://", 8) == 0 && net_diag_cb) {
             net_diag_cb(url);
         }
@@ -2812,10 +2819,23 @@ static esp_err_t http_post_json(const char *url, const char *body, int timeout_m
     esp_http_client_cleanup(client);
 
     if (status < 200 || status >= 300) {
-        ESP_LOGW(TAG, "HTTP POST status=%d for %s", status, url);
+        ESP_LOGW(TAG, "HTTP %s status=%d for %s",
+                 method == HTTP_METHOD_PATCH ? "PATCH" : "POST",
+                 status,
+                 url);
         return ESP_FAIL;
     }
     return ESP_OK;
+}
+
+static esp_err_t http_post_json(const char *url, const char *body, int timeout_ms, ytmd_network_diag_cb_t net_diag_cb)
+{
+    return http_send_json(url, HTTP_METHOD_POST, body, timeout_ms, net_diag_cb);
+}
+
+static esp_err_t http_patch_json(const char *url, const char *body, int timeout_ms, ytmd_network_diag_cb_t net_diag_cb)
+{
+    return http_send_json(url, HTTP_METHOD_PATCH, body, timeout_ms, net_diag_cb);
 }
 
 static esp_err_t ytmd_post_with_fallback(const char *path_primary,
@@ -3318,6 +3338,98 @@ esp_err_t ytmd_client_queue_cache_get(ytmd_client_queue_item_t *out_items,
     return ESP_OK;
 }
 
+esp_err_t ytmd_client_queue_cache_get_compact(ytmd_client_queue_compact_item_t *out_items,
+                                              size_t max_items,
+                                              size_t *out_copied,
+                                              size_t *out_total,
+                                              int *out_selected_pos)
+{
+    if (out_copied) {
+        *out_copied = 0;
+    }
+    if (out_total) {
+        *out_total = 0;
+    }
+    if (out_selected_pos) {
+        *out_selected_pos = -1;
+    }
+
+    if (!queue_cache_lock(pdMS_TO_TICKS(50))) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    size_t total = s_queue_cache_count;
+    size_t copied = 0;
+    if (out_items && max_items > 0 && s_queue_cache_items && total > 0) {
+        copied = (total < max_items) ? total : max_items;
+        for (size_t i = 0; i < copied; ++i) {
+            const ytmd_client_queue_item_t *src = &s_queue_cache_items[i];
+            ytmd_client_queue_compact_item_t *dst = &out_items[i];
+            dst->index = src->index;
+            dst->selected = src->selected;
+            copy_string_field(dst->title, sizeof(dst->title), src->title);
+            copy_string_field(dst->artist, sizeof(dst->artist), src->artist);
+            copy_string_field(dst->video_id, sizeof(dst->video_id), src->video_id);
+        }
+    }
+
+    if (out_copied) {
+        *out_copied = copied;
+    }
+    if (out_total) {
+        *out_total = total;
+    }
+    if (out_selected_pos) {
+        *out_selected_pos = s_queue_cache_selected_pos;
+    }
+
+    queue_cache_unlock();
+    return ESP_OK;
+}
+
+esp_err_t ytmd_client_refresh_queue_cache(ytmd_network_diag_cb_t net_diag_cb)
+{
+    uint8_t *queue_json = NULL;
+    size_t queue_json_len = 0;
+    bool too_large = false;
+    int queue_status = 0;
+
+    esp_err_t err = http_get_alloc(
+        YTMD_URL_API_QUEUE,
+        MAX_QUEUE_JSON_BYTES,
+        HTTP_QUEUE_TIMEOUT_MS,
+        true,
+        net_diag_cb,
+        &queue_status,
+        &too_large,
+        &queue_json,
+        &queue_json_len);
+
+    if (err != ESP_OK) {
+        if (too_large) {
+            ESP_LOGW(TAG, "QUEUE refresh payload exceeded %u bytes", (unsigned)MAX_QUEUE_JSON_BYTES);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        return err;
+    }
+
+    if (!queue_json || queue_json_len == 0) {
+        free(queue_json);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    char dummy_title[256] = {0};
+    char dummy_artist[128] = {0};
+    (void)extract_next_song_from_queue_json(queue_json,
+                                            queue_json_len,
+                                            dummy_title,
+                                            sizeof(dummy_title),
+                                            dummy_artist,
+                                            sizeof(dummy_artist));
+    free(queue_json);
+    return ESP_OK;
+}
+
 esp_err_t ytmd_client_try_get_cached_art_by_queue_offset(int rel_offset,
                                                          uint16_t *dst_rgb565,
                                                          int dst_w,
@@ -3436,6 +3548,40 @@ esp_err_t ytmd_client_cmd_next(void)
                                    NULL,
                                    NULL,
                                    NULL);
+}
+
+esp_err_t ytmd_client_cmd_play_queue_index(int index)
+{
+    if (index < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char body[48] = {0};
+    snprintf(body, sizeof(body), "{\"index\":%d}", index);
+
+    char url[160] = {0};
+    snprintf(url, sizeof(url), "%s%s", YTMD_API_BASE, "/api/v1/queue");
+    return http_patch_json(url, body, HTTP_CMD_TIMEOUT_MS, NULL);
+}
+
+esp_err_t ytmd_client_cmd_play_video_id(const char *video_id)
+{
+    if (!video_id || !is_valid_youtube_video_id(video_id, strlen(video_id))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char body[128] = {0};
+    snprintf(body,
+             sizeof(body),
+             "{\"videoId\":\"%s\",\"insertPosition\":\"INSERT_AFTER_CURRENT_VIDEO\"}",
+             video_id);
+
+    esp_err_t err = ytmd_post_with_fallback("/api/v1/queue", body, NULL, NULL, NULL);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    return ytmd_client_cmd_next();
 }
 
 esp_err_t ytmd_client_cmd_seek_to(int seconds)

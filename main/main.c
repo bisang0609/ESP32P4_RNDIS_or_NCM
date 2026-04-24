@@ -35,6 +35,7 @@
 
 static const char *TAG = "USB_NCM_YTMD_ART";
 #define YTMD_AUX_STATE_ENRICH_INTERVAL_MS 1500
+#define YTMD_QUEUE_REFRESH_INTERVAL_MS 2500
 #define YTMD_PREV_TRACK_THRESHOLD_SEC 5
 
 static char s_last_art_url[YTMD_ART_URL_MAX_LEN] = {0};
@@ -333,6 +334,7 @@ static void album_task(void *arg)
     char new_artist[PLAYER_ARTIST_MAX_LEN] = {0};
     ytmd_client_playback_state_t playback_state = {0};
     uint32_t last_aux_enrich_tick = 0;
+    uint32_t last_queue_refresh_tick = 0;
 
     while (1) {
         if (!ncm_net_wait_ready(wait_tick)) {
@@ -386,6 +388,13 @@ static void album_task(void *arg)
         }
 
         uint32_t now_tick = (uint32_t)xTaskGetTickCount();
+        if ((now_tick - last_queue_refresh_tick) >= pdMS_TO_TICKS(YTMD_QUEUE_REFRESH_INTERVAL_MS)) {
+            esp_err_t qerr = ytmd_client_refresh_queue_cache(ncm_net_log_diagnostics);
+            if (qerr != ESP_OK && qerr != ESP_ERR_NOT_FOUND && qerr != ESP_ERR_INVALID_SIZE) {
+                ESP_LOGD(TAG, "Queue cache refresh skipped: %s", esp_err_to_name(qerr));
+            }
+            last_queue_refresh_tick = now_tick;
+        }
         if ((now_tick - last_aux_enrich_tick) >= pdMS_TO_TICKS(YTMD_AUX_STATE_ENRICH_INTERVAL_MS)) {
             ytmd_client_playback_state_t aux_state = playback_state;
             if (ytmd_client_enrich_playback_state(&aux_state, ncm_net_log_diagnostics) == ESP_OK) {
@@ -430,4 +439,5 @@ void app_main(void)
     }
 #endif
 }
+
 
