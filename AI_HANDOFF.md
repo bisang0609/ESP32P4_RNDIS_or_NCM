@@ -98,3 +98,19 @@ powershell -ExecutionPolicy Bypass -File .\tools\start_clean_build.ps1 -ResetMan
 
 ## 8) 다음 세션 시작 프롬프트 (복붙용)
 "AI_HANDOFF.md 기준으로 이어서 진행. 우선 app-flash 후 seekbar 터치 시크(`/api/v1/seek-to`)와 time_now/total_time, next_song 정확도 실기기 검증해줘."
+
+---
+
+## Session Update (2026-04-25)
+
+- UI generated files are managed in EEZ Studio. Do not manually edit `main/ui/*` unless explicitly requested.
+- Playlist navigation wiring is done in `main/player_ui.c`:
+  - `golist` click -> `SCREEN_ID_PLAYLIST`
+  - playlist back icon click (`ui_image_arrow_left`) -> `SCREEN_ID_MAIN`
+- `nowplay` label now shows current `title-artist` and uses the same font size as `song_artist`.
+- UI object name conflict was resolved in UI side by renaming `return` -> `return_main`.
+- Build verification completed:
+  - `. C:\esp\v6.0\esp-idf\export.ps1; idf.py -B build_DEV_TEAM_2 build`
+  - Result: PASS
+- Current checkpoint commit:
+  - `d4e86c5` (`feat: wire playlist scene navigation and nowplay label`)
