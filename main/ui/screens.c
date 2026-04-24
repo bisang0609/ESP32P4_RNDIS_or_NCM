@@ -214,6 +214,15 @@ void create_screen_main() {
             lv_obj_set_style_text_color(obj, lv_color_hex(0x727272), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_label_set_text_static(obj, "99:99");
         }
+        {
+            // golist
+            lv_obj_t *obj = lv_image_create(parent_obj);
+            objects.golist = obj;
+            lv_obj_set_pos(obj, 709, -8);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_image_set_src(obj, &img_list_enable);
+            lv_image_set_scale(obj, 125);
+        }
     }
     
     tick_screen_main();
@@ -222,12 +231,71 @@ void create_screen_main() {
 void tick_screen_main() {
 }
 
+void create_screen_playlist() {
+    lv_obj_t *obj = lv_obj_create(0);
+    objects.playlist = obj;
+    lv_obj_set_pos(obj, 0, 0);
+    lv_obj_set_size(obj, 800, 480);
+    {
+        lv_obj_t *parent_obj = obj;
+        {
+            lv_obj_t *obj = lv_obj_create(parent_obj);
+            lv_obj_set_pos(obj, 54, 76);
+            lv_obj_set_size(obj, 692, 384);
+        }
+        {
+            // playlist_area
+            lv_obj_t *obj = lv_obj_create(parent_obj);
+            objects.playlist_area = obj;
+            lv_obj_set_pos(obj, 54, 76);
+            lv_obj_set_size(obj, 692, 384);
+            lv_obj_set_style_pad_left(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_top(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_right(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_pad_bottom(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_opa(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_radius(obj, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_scrollbar_mode(obj, LV_SCROLLBAR_MODE_AUTO);
+            lv_obj_set_scroll_dir(obj, LV_DIR_VER);
+            lv_obj_set_style_layout(obj, LV_LAYOUT_FLEX, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_layout(obj, LV_LAYOUT_FLEX, LV_PART_MAIN | LV_STATE_SCROLLED);
+            lv_obj_set_style_flex_flow(obj, LV_FLEX_FLOW_COLUMN, LV_PART_MAIN | LV_STATE_SCROLLED);
+        }
+        {
+            // return_main
+            lv_obj_t *obj = lv_image_create(parent_obj);
+            objects.return_main = obj;
+            lv_obj_set_pos(obj, 8, -25);
+            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+            lv_image_set_src(obj, &img_arrow_left);
+            lv_image_set_scale(obj, 125);
+        }
+        {
+            // nowplay
+            lv_obj_t *obj = lv_label_create(parent_obj);
+            objects.nowplay = obj;
+            lv_obj_set_pos(obj, 104, 15);
+            lv_obj_set_size(obj, 527, 40);
+            lv_label_set_long_mode(obj, LV_LABEL_LONG_SCROLL_CIRCULAR);
+            lv_obj_set_style_pad_top(obj, 1, LV_PART_MAIN | LV_STATE_SCROLLED);
+            lv_label_set_text_static(obj, "Title-Songs");
+        }
+    }
+    
+    tick_screen_playlist();
+}
+
+void tick_screen_playlist() {
+}
+
 typedef void (*tick_screen_func_t)();
 tick_screen_func_t tick_screen_funcs[] = {
     tick_screen_main,
+    tick_screen_playlist,
 };
 void tick_screen(int screen_index) {
-    if (screen_index >= 0 && screen_index < 1) {
+    if (screen_index >= 0 && screen_index < 2) {
         tick_screen_funcs[screen_index]();
     }
 }
@@ -325,4 +393,5 @@ void create_screens() {
     // Initialize screens
     // Create screens
     create_screen_main();
+    create_screen_playlist();
 }

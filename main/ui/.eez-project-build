@@ -4,6 +4,7 @@
     "fonts.h",
     "images.c",
     "images.h",
+    "images/ui_image_arrow_left.c",
     "images/ui_image_list_enable.c",
     "images/ui_image_pause.c",
     "images/ui_image_play.c",

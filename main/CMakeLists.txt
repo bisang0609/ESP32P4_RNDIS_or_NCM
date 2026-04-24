@@ -1,4 +1,5 @@
 set(UI_IMAGE_SRCS
+    "ui/images/ui_image_arrow_left.c"
     "ui/images/ui_image_list_enable.c"
     "ui/images/ui_image_pause.c"
     "ui/images/ui_image_play.c"

@@ -43,6 +43,8 @@ typedef struct {
     lv_obj_t *seekbar;
     lv_obj_t *time_now;
     lv_obj_t *total_time;
+    lv_obj_t *golist;
+    lv_obj_t *nowplay;
 } player_ui_objects_t;
 
 static player_ui_objects_t s_ui;
@@ -67,6 +69,7 @@ static char s_last_track_artist[PLAYER_ARTIST_MAX_LEN] = {0};
 static lv_obj_t *s_album_bg = NULL;
 static uint32_t s_seekbar_indicator_color_hex = 0;
 static bool s_seekbar_indicator_color_valid = false;
+static lv_obj_t *s_playlist_back = NULL;
 
 typedef struct {
     const char *name;
@@ -89,6 +92,8 @@ static const object_ref_entry_t s_generated_object_map[] = {
     { "seekbar", &objects.seekbar },
     { "time_now", &objects.time_now },
     { "total_time", &objects.total_time },
+    { "golist", &objects.golist },
+    { "nowplay", &objects.nowplay },
 };
 
 #if defined(LV_USE_OBJ_NAME) && LV_USE_OBJ_NAME
@@ -179,6 +184,8 @@ static void bind_ui_objects_by_name(void)
         { "seekbar", &s_ui.seekbar },
         { "time_now", &s_ui.time_now },
         { "total_time", &s_ui.total_time },
+        { "golist", &s_ui.golist },
+        { "nowplay", &s_ui.nowplay },
     };
 
     const size_t count = sizeof(binds) / sizeof(binds[0]);
@@ -251,7 +258,50 @@ static void apply_player_fonts(void)
         if (s_ui.total_time) {
             lv_obj_set_style_text_font(s_ui.total_time, font_body, LV_PART_MAIN | LV_STATE_DEFAULT);
         }
+        if (s_ui.nowplay) {
+            lv_obj_set_style_text_font(s_ui.nowplay, font_body, LV_PART_MAIN | LV_STATE_DEFAULT);
+        }
     }
+}
+
+static void on_golist_clicked(lv_event_t *e)
+{
+    (void)e;
+    loadScreen(SCREEN_ID_PLAYLIST);
+}
+
+static void on_playlist_back_clicked(lv_event_t *e)
+{
+    (void)e;
+    loadScreen(SCREEN_ID_MAIN);
+}
+
+static lv_obj_t *find_playlist_back_button(void)
+{
+    if (!objects.playlist) {
+        return NULL;
+    }
+
+    const uint32_t child_count = lv_obj_get_child_cnt(objects.playlist);
+    for (uint32_t i = 0; i < child_count; ++i) {
+        lv_obj_t *child = lv_obj_get_child(objects.playlist, i);
+        if (!child) {
+            continue;
+        }
+        if (!lv_obj_check_type(child, &lv_image_class)) {
+            continue;
+        }
+        const void *src = lv_image_get_src(child);
+        if (src == (const void *)&img_arrow_left) {
+            return child;
+        }
+    }
+
+    // Fallback to generated index order when image-source match is unavailable.
+    if (child_count >= 3) {
+        return lv_obj_get_child(objects.playlist, 2);
+    }
+    return NULL;
 }
 
 static void build_next_song_string(char *out, size_t out_cap, const char *title, const char *artist)
@@ -968,6 +1018,11 @@ static void bind_player_events(void)
     bind_click_event(s_ui.song_repeat, on_repeat_clicked, "song_repeat");
     bind_click_event(s_ui.song_like, on_like_clicked, "song_like");
     bind_click_event(s_ui.song_senti, on_senti_clicked, "song_senti");
+    bind_click_event(s_ui.golist, on_golist_clicked, "golist");
+
+    s_playlist_back = find_playlist_back_button();
+    bind_click_event(s_playlist_back, on_playlist_back_clicked, "playlist_back");
+
     if (s_ui.seekbar) {
         lv_obj_add_flag(s_ui.seekbar, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_ext_click_area(s_ui.seekbar, 16);
@@ -1062,6 +1117,11 @@ void player_ui_update(const ytmd_player_state_t *state)
 
     if (s_ui.song_artist) {
         lv_label_set_text(s_ui.song_artist, (state->artist[0] != '\0') ? state->artist : "-");
+    }
+    if (s_ui.nowplay) {
+        char nowplay_text[PLAYER_TITLE_MAX_LEN + PLAYER_ARTIST_MAX_LEN + 4] = {0};
+        build_next_song_string(nowplay_text, sizeof(nowplay_text), state->title, state->artist);
+        lv_label_set_text(s_ui.nowplay, nowplay_text);
     }
 
     apply_play_state_image(state->is_playing);
