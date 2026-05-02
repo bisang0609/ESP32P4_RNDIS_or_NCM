@@ -65,11 +65,17 @@ dependencies:
     source:
       path: managed_components\espressif__tinyusb
       type: local
-    version: 0.19.0~2
+    version: 0.19.0~3
   idf:
     source:
       type: idf
     version: 6.0.0
+  joltwallet/littlefs:
+    dependencies: []
+    source:
+      path: managed_components\joltwallet__littlefs
+      type: local
+    version: 1.21.1
   lvgl/lvgl:
     dependencies: []
     source:
@@ -88,7 +94,8 @@ direct_dependencies:
 - espressif/esp_tinyusb
 - espressif/tinyusb
 - idf
+- joltwallet/littlefs
 - lvgl/lvgl
-manifest_hash: 2b2dcaea79fc41cca8cfe69801595aa5f1d5ec7e06bd7def4feea2b0b98654f5
+manifest_hash: 0378928f7769c394bbce67e08ebfcdf89032cd3113949a5c8f545a5326d4b904
 target: esp32p4
 version: 3.0.0

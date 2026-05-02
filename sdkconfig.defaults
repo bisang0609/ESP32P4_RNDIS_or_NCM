@@ -9,6 +9,8 @@ CONFIG_ESP32P4_REV_MIN_100=y
 # Helpful logs during bring-up
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_COLORS=y
+CONFIG_ESP_SYSTEM_USE_FRAME_POINTER=y
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
 
 # Safer default for ESP32-P4 rev < 3.0
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y
@@ -19,9 +21,9 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 
-# App image exceeds 1MB with LVGL/JPEG stack; use larger single-app partition.
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
-CONFIG_PARTITION_TABLE_FILENAME="partitions_singleapp_large.csv"
+# Use custom partition table with large LittleFS area for bin fonts.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # TLS certificate chain compatibility improvements (cross-signed + legacy roots)
 CONFIG_MBEDTLS_X509_TRUSTED_CERT_CALLBACK=y
@@ -31,3 +33,7 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEPRECATED_LIST=y
 # ESP32-P4 rev1.x: disable unsupported ECDSA HW path and use software fallback
 # CONFIG_MBEDTLS_HARDWARE_ECDSA_VERIFY is not set
 # CONFIG_MBEDTLS_HARDWARE_ECC is not set
+
+# LVGL: use libc malloc so large bin fonts can be loaded from LittleFS.
+# CONFIG_LV_USE_BUILTIN_MALLOC is not set
+CONFIG_LV_USE_CLIB_MALLOC=y

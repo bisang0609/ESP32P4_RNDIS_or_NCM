@@ -1,4 +1,6 @@
 {
     "idf.flashType": "UART",
-    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json"
+    "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+    "idf.portWin": "COM7",
+    "idf.currentSetup": "C:\\esp\\v6.0\\esp-idf"
 }
