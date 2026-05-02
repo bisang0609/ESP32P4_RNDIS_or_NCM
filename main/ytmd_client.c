@@ -123,6 +123,7 @@ static int queue_cache_find_selected_pos_by_hint_locked(const char *title,
                                                         const char *artist,
                                                         const char *video_id);
 static void queue_cache_set_selected_pos_locked(int pos);
+static int queue_cache_pick_default_selected_pos_locked(void);
 static void queue_cache_align_selected_with_hint_locked(void);
 static const char *resolve_stable_video_id_for_track(const char *title,
                                                      const char *artist,
@@ -1079,6 +1080,44 @@ static void queue_cache_set_selected_pos_locked(int pos)
     }
 }
 
+static int queue_cache_pick_default_selected_pos_locked(void)
+{
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
+        return -1;
+    }
+
+    int best_pos = -1;
+    int best_row = INT_MAX;
+    int first_valid = -1;
+
+    for (size_t i = 0; i < s_queue_cache_count; ++i) {
+        const ytmd_client_queue_item_t *item = &s_queue_cache_items[i];
+        const bool has_track = (item->title[0] != '\0') ||
+                               (item->artist[0] != '\0') ||
+                               (item->video_id[0] != '\0');
+        if (!has_track) {
+            continue;
+        }
+
+        if (first_valid < 0) {
+            first_valid = (int)i;
+        }
+
+        if (item->index >= 0 && item->index < best_row) {
+            best_row = item->index;
+            best_pos = (int)i;
+        }
+    }
+
+    if (best_pos >= 0) {
+        return best_pos;
+    }
+    if (first_valid >= 0) {
+        return first_valid;
+    }
+    return 0;
+}
+
 static void queue_cache_align_selected_with_hint_locked(void)
 {
     if (!s_queue_cache_items || s_queue_cache_count == 0) {
@@ -1088,8 +1127,19 @@ static void queue_cache_align_selected_with_hint_locked(void)
         s_track_hint_title,
         s_track_hint_artist,
         s_track_hint_video_id);
-    if (hint_pos >= 0 && hint_pos != s_queue_cache_selected_pos) {
-        queue_cache_set_selected_pos_locked(hint_pos);
+
+    if (hint_pos >= 0) {
+        if (hint_pos != s_queue_cache_selected_pos) {
+            queue_cache_set_selected_pos_locked(hint_pos);
+        }
+        return;
+    }
+
+    if (s_queue_cache_selected_pos < 0 || (size_t)s_queue_cache_selected_pos >= s_queue_cache_count) {
+        int fallback_pos = queue_cache_pick_default_selected_pos_locked();
+        if (fallback_pos >= 0 && fallback_pos != s_queue_cache_selected_pos) {
+            queue_cache_set_selected_pos_locked(fallback_pos);
+        }
     }
 }
 
@@ -1323,7 +1373,14 @@ static bool queue_cache_copy_next_from_selected_locked(char *out_title,
                                                        char *out_artist,
                                                        size_t out_artist_cap)
 {
-    if (!s_queue_cache_items || s_queue_cache_count == 0 || s_queue_cache_selected_pos < 0) {
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
+        return false;
+    }
+
+    if (s_queue_cache_selected_pos < 0 || (size_t)s_queue_cache_selected_pos >= s_queue_cache_count) {
+        queue_cache_align_selected_with_hint_locked();
+    }
+    if (s_queue_cache_selected_pos < 0 || (size_t)s_queue_cache_selected_pos >= s_queue_cache_count) {
         return false;
     }
 
@@ -2631,11 +2688,7 @@ static void enrich_playback_state_from_endpoint(const char *url,
 static void enrich_next_song_from_queue_endpoints(ytmd_client_playback_state_t *state,
                                                   ytmd_network_diag_cb_t net_diag_cb)
 {
-    if (!state || state->has_next_song) {
-        if (state && state->has_next_song) {
-            ESP_LOGD(TAG, "NEXT: /song already has next (title='%s', artist='%s'), skip queue fetch",
-                     state->next_title, state->next_artist);
-        }
+    if (!state) {
         return;
     }
 
@@ -2930,18 +2983,7 @@ static bool extract_next_song_from_queue_json(const uint8_t *json_data,
 
     bool fallback_ok = false;
     if (cache_locked) {
-        if (s_queue_cache_selected_pos < 0) {
-            int hint_pos = queue_cache_find_selected_pos_by_hint_locked(
-                s_track_hint_title,
-                s_track_hint_artist,
-                s_track_hint_video_id);
-            if (hint_pos >= 0) {
-                s_queue_cache_selected_pos = hint_pos;
-                for (size_t i = 0; i < s_queue_cache_count; ++i) {
-                    s_queue_cache_items[i].selected = ((int)i == hint_pos);
-                }
-            }
-        }
+        queue_cache_align_selected_with_hint_locked();
         ESP_LOGD(TAG, "NEXT: queue-cache resolve selected_pos=%d count=%u hint_title='%s' hint_artist='%s' hint_vid='%s'",
                  s_queue_cache_selected_pos,
                  (unsigned)s_queue_cache_count,
