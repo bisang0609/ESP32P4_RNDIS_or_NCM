@@ -51,11 +51,6 @@ typedef struct {
     lv_obj_t *time_now;
     lv_obj_t *total_time;
     lv_obj_t *golist;
-    lv_obj_t *load5;
-    lv_obj_t *load4;
-    lv_obj_t *load3;
-    lv_obj_t *load2;
-    lv_obj_t *load1;
     lv_obj_t *nowplay;
     lv_obj_t *playlist_area;
     lv_obj_t *return_main;
@@ -141,11 +136,6 @@ static const object_ref_entry_t s_generated_object_map[] = {
     { "time_now", &objects.time_now },
     { "total_time", &objects.total_time },
     { "golist", &objects.golist },
-    { "load5", &objects.load5 },
-    { "load4", &objects.load4 },
-    { "load3", &objects.load3 },
-    { "load2", &objects.load2 },
-    { "load1", &objects.load1 },
     { "nowplay", &objects.nowplay },
     { "playlist_area", &objects.playlist_area },
     { "return_main", &objects.return_main },
@@ -242,11 +232,6 @@ static void bind_ui_objects_by_name(void)
         { "time_now", &s_ui.time_now },
         { "total_time", &s_ui.total_time },
         { "golist", &s_ui.golist },
-        { "load5", &s_ui.load5 },
-        { "load4", &s_ui.load4 },
-        { "load3", &s_ui.load3 },
-        { "load2", &s_ui.load2 },
-        { "load1", &s_ui.load1 },
         { "nowplay", &s_ui.nowplay },
         { "playlist_area", &s_ui.playlist_area },
         { "return_main", &s_ui.return_main },
@@ -1065,31 +1050,11 @@ static bool is_playlist_cache_ready_now(void)
     return (err == ESP_OK) && (total > 0);
 }
 
-static bool has_cached_art_for_offset(int rel_offset)
-{
-    return ytmd_client_has_cached_art_by_queue_offset(rel_offset, NULL, 0);
-}
-
 static void update_playlist_ready_icons(void)
 {
     if (s_ui.golist) {
         set_image_by_name(s_ui.golist, s_playlist_cache_ready ? "List_enable" : "List_disable");
     }
-
-    if (!s_playlist_cache_ready) {
-        if (s_ui.load1) set_image_by_name(s_ui.load1, "circle_1");
-        if (s_ui.load2) set_image_by_name(s_ui.load2, "circle_1");
-        if (s_ui.load3) set_image_by_name(s_ui.load3, "circle_1");
-        if (s_ui.load4) set_image_by_name(s_ui.load4, "circle_1");
-        if (s_ui.load5) set_image_by_name(s_ui.load5, "circle_1");
-        return;
-    }
-
-    if (s_ui.load1) set_image_by_name(s_ui.load1, has_cached_art_for_offset(-2) ? "circle_2" : "circle_1");
-    if (s_ui.load2) set_image_by_name(s_ui.load2, has_cached_art_for_offset(-1) ? "circle_2" : "circle_1");
-    if (s_ui.load3) set_image_by_name(s_ui.load3, has_cached_art_for_offset(0) ? "circle_2" : "circle_1");
-    if (s_ui.load4) set_image_by_name(s_ui.load4, has_cached_art_for_offset(1) ? "circle_2" : "circle_1");
-    if (s_ui.load5) set_image_by_name(s_ui.load5, has_cached_art_for_offset(2) ? "circle_2" : "circle_1");
 }
 
 static void sync_playlist_cache_icons(bool force)

@@ -129,22 +129,22 @@ static const char *resolve_stable_video_id_for_track(const char *title,
                                                      const char *raw_video_id,
                                                      char *out_video_id,
                                                      size_t out_video_id_cap);
-static int resolve_queue_item_pos_for_track_locked(const char *title,
-                                                   const char *artist,
-                                                   const char *video_id,
-                                                   bool require_art_url);
-static bool resolve_queue_art_url_for_track(const char *title,
-                                            const char *artist,
-                                            const char *video_id,
-                                            char *out_art_url,
-                                            size_t out_art_url_cap);
-static bool resolve_queue_title_artist_for_track(const char *title,
-                                                 const char *artist,
-                                                 const char *video_id,
-                                                 char *out_title,
-                                                 size_t out_title_cap,
-                                                 char *out_artist,
-                                                 size_t out_artist_cap);
+static int __attribute__((unused)) resolve_queue_item_pos_for_track_locked(const char *title,
+                                                                           const char *artist,
+                                                                           const char *video_id,
+                                                                           bool require_art_url);
+static bool __attribute__((unused)) resolve_queue_art_url_for_track(const char *title,
+                                                                    const char *artist,
+                                                                    const char *video_id,
+                                                                    char *out_art_url,
+                                                                    size_t out_art_url_cap);
+static bool __attribute__((unused)) resolve_queue_title_artist_for_track(const char *title,
+                                                                         const char *artist,
+                                                                         const char *video_id,
+                                                                         char *out_title,
+                                                                         size_t out_title_cap,
+                                                                         char *out_artist,
+                                                                         size_t out_artist_cap);
 static const char *resolve_queue_item_video_id_locked(const ytmd_client_queue_item_t *item,
                                                       int rel_offset,
                                                       char *out_video_id,
@@ -1134,10 +1134,10 @@ static const char *resolve_stable_video_id_for_track(const char *title,
     return (out_video_id[0] != '\0') ? out_video_id : NULL;
 }
 
-static int resolve_queue_item_pos_for_track_locked(const char *title,
-                                                   const char *artist,
-                                                   const char *video_id,
-                                                   bool require_art_url)
+static int __attribute__((unused)) resolve_queue_item_pos_for_track_locked(const char *title,
+                                                                           const char *artist,
+                                                                           const char *video_id,
+                                                                           bool require_art_url)
 {
     if (!s_queue_cache_items || s_queue_cache_count == 0) {
         return -1;
@@ -1194,11 +1194,11 @@ static int resolve_queue_item_pos_for_track_locked(const char *title,
     return -1;
 }
 
-static bool resolve_queue_art_url_for_track(const char *title,
-                                            const char *artist,
-                                            const char *video_id,
-                                            char *out_art_url,
-                                            size_t out_art_url_cap)
+static bool __attribute__((unused)) resolve_queue_art_url_for_track(const char *title,
+                                                                    const char *artist,
+                                                                    const char *video_id,
+                                                                    char *out_art_url,
+                                                                    size_t out_art_url_cap)
 {
     if (!out_art_url || out_art_url_cap == 0) {
         return false;
@@ -1232,13 +1232,13 @@ static bool resolve_queue_art_url_for_track(const char *title,
     return true;
 }
 
-static bool resolve_queue_title_artist_for_track(const char *title,
-                                                 const char *artist,
-                                                 const char *video_id,
-                                                 char *out_title,
-                                                 size_t out_title_cap,
-                                                 char *out_artist,
-                                                 size_t out_artist_cap)
+static bool __attribute__((unused)) resolve_queue_title_artist_for_track(const char *title,
+                                                                         const char *artist,
+                                                                         const char *video_id,
+                                                                         char *out_title,
+                                                                         size_t out_title_cap,
+                                                                         char *out_artist,
+                                                                         size_t out_artist_cap)
 {
     if (out_title && out_title_cap > 0) {
         out_title[0] = '\0';
@@ -3511,57 +3511,12 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
                                                              video_id_raw,
                                                              stable_video_id,
                                                              sizeof(stable_video_id));
-    char queue_title[256] = {0};
-    char queue_artist[128] = {0};
-    bool has_queue_title_artist = resolve_queue_title_artist_for_track(out_title,
-                                                                       out_artist,
-                                                                       video_id,
-                                                                       queue_title,
-                                                                       sizeof(queue_title),
-                                                                       queue_artist,
-                                                                       sizeof(queue_artist));
-    if (has_queue_title_artist) {
-        bool title_changed = false;
-        bool artist_changed = false;
-        if (queue_title[0] != '\0' && out_title && out_title_cap > 0) {
-            title_changed = (strncmp(out_title, queue_title, out_title_cap - 1) != 0);
-            copy_string_field(out_title, out_title_cap, queue_title);
-        }
-        if (queue_artist[0] != '\0' && out_artist && out_artist_cap > 0) {
-            artist_changed = (strncmp(out_artist, queue_artist, out_artist_cap - 1) != 0);
-            copy_string_field(out_artist, out_artist_cap, queue_artist);
-        }
-        if (title_changed || artist_changed) {
-            ESP_LOGD(TAG, "Title/artist override: /queue ('%s' - '%s')",
-                     out_title ? out_title : "",
-                     out_artist ? out_artist : "");
-        }
-    }
     int track_duration_seconds = -1;
     if (out_playback_state && out_playback_state->has_song_duration_seconds) {
         track_duration_seconds = out_playback_state->song_duration_seconds;
     }
     s_track_hint_duration_seconds = track_duration_seconds;
     queue_cache_set_track_hint(out_title, out_artist, video_id);
-    char queue_art_url[YTMD_ART_URL_MAX_LEN] = {0};
-    bool has_queue_art_url = resolve_queue_art_url_for_track(out_title,
-                                                             out_artist,
-                                                             video_id,
-                                                             queue_art_url,
-                                                             sizeof(queue_art_url));
-    bool force_queue_primary = false;
-    if (has_queue_art_url && art_url && strcmp(art_url, queue_art_url) == 0) {
-        force_queue_primary = true;
-    }
-    if (has_queue_art_url && (!art_url || strcmp(art_url, queue_art_url) != 0)) {
-        char *new_url = dup_cstr(queue_art_url);
-        if (new_url) {
-            free(art_url);
-            art_url = new_url;
-            force_queue_primary = true;
-            ESP_LOGD(TAG, "Art URL override: /queue (%s)", queue_art_url);
-        }
-    }
     char track_identity_key[YTMD_ART_URL_MAX_LEN] = {0};
     bool has_track_identity_key = build_track_identity_key(out_title,
                                                            out_artist,
@@ -3604,8 +3559,7 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
         }
     }
     if (same_as_last) {
-        // Keep neighboring album-art cache warm even when the current image is unchanged.
-        schedule_prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb);
+        // schedule_prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb); // disabled: use /song art only
         free(art_url);
         free(video_id_raw);
         return ESP_ERR_NOT_FOUND;
@@ -3622,7 +3576,7 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
         } else {
             snprintf(out_art_url, out_art_url_cap, "%s", art_cache_key);
         }
-        schedule_prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb);
+        // schedule_prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb); // disabled: album-art preloading off
         free(art_url);
         free(video_id_raw);
         return ESP_OK;
@@ -3632,8 +3586,7 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
     bool has_fallback = make_ytimg_fallback_url(video_id, fb_url, sizeof(fb_url));
     bool using_fallback_url = has_fallback && (strcmp(art_url, fb_url) == 0);
     const bool has_exact_square_hint = has_square_art_size_hint(art_url);
-    const bool prefer_fallback_first = !force_queue_primary &&
-                                       has_fallback &&
+    const bool prefer_fallback_first = has_fallback &&
                                        is_googleusercontent_art_url(art_url) &&
                                        !has_exact_square_hint;
     ESP_LOGI(TAG, "Art URL selected=%s cache_key=%s videoId=%s fallback=%s prefer_fallback_first=%d",
@@ -3763,7 +3716,7 @@ esp_err_t ytmd_client_fetch_album_art(uint16_t *dst_rgb565,
     if (has_track_identity_key) {
         (void)art_cache_store_from_src(track_identity_key, dst_w, dst_h, dst_rgb565);
     }
-    schedule_prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb);
+    // schedule_prefetch_art_window_from_queue(art_cache_key, dst_w, dst_h, net_diag_cb); // disabled: album-art preloading off
 
     if (has_track_identity_key) {
         snprintf(out_art_url, out_art_url_cap, "%s", track_identity_key);
@@ -3862,6 +3815,40 @@ esp_err_t ytmd_client_queue_cache_get_compact(ytmd_client_queue_compact_item_t *
     if (out_selected_pos) {
         *out_selected_pos = s_queue_cache_selected_pos;
     }
+
+    queue_cache_unlock();
+    return ESP_OK;
+}
+
+esp_err_t ytmd_client_queue_cache_get_selected_compact(ytmd_client_queue_compact_item_t *out_item)
+{
+    if (!out_item) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out_item, 0, sizeof(*out_item));
+    out_item->index = -1;
+
+    if (!queue_cache_lock(pdMS_TO_TICKS(50))) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (!s_queue_cache_items || s_queue_cache_count == 0) {
+        queue_cache_unlock();
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    queue_cache_align_selected_with_hint_locked();
+    if (s_queue_cache_selected_pos < 0 || (size_t)s_queue_cache_selected_pos >= s_queue_cache_count) {
+        queue_cache_unlock();
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    const ytmd_client_queue_item_t *src = &s_queue_cache_items[s_queue_cache_selected_pos];
+    out_item->index = src->index;
+    out_item->selected = true;
+    copy_string_field(out_item->title, sizeof(out_item->title), src->title);
+    copy_string_field(out_item->artist, sizeof(out_item->artist), src->artist);
+    copy_string_field(out_item->video_id, sizeof(out_item->video_id), src->video_id);
 
     queue_cache_unlock();
     return ESP_OK;

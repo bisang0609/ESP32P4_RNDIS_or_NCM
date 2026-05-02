@@ -38,15 +38,23 @@ static const char *TAG = "USB_NCM_YTMD_ART";
 #define YTMD_QUEUE_REFRESH_INTERVAL_MS 2500
 #define YTMD_PREV_SEEK_SETTLE_MS 80
 #define YTMD_PREV_TRANSITION_GUARD_MS 1200
+#define YTMD_TRACK_SWITCH_PREP_TIMEOUT_MS 5000
 
 static char s_last_art_url[YTMD_ART_URL_MAX_LEN] = {0};
 static TaskHandle_t s_album_task_handle = NULL;
 static uint32_t s_prev_transition_guard_until_tick = 0;
+static volatile bool s_pending_track_switch = false;
+static volatile int s_pending_track_switch_dir = 0; // -1: prev, +1: next
+static volatile bool s_pending_resume_after_ready = false;
+static volatile uint32_t s_pending_track_switch_deadline_tick = 0;
+static char s_pending_from_title[PLAYER_TITLE_MAX_LEN] = {0};
+static char s_pending_from_artist[PLAYER_ARTIST_MAX_LEN] = {0};
 
 /* ?¨ÏÉù ?ÅÌÉú ??ytmd_client ?ïÏû• ????Íµ¨Ï°∞Ï≤¥Î? Ï±ÑÏõå player_ui_update() ???ÑÎã¨ */
 static ytmd_player_state_t s_player_state = {0};
 static bool update_text_field(char *dst, size_t dst_cap, const char *src);
-static esp_err_t apply_cached_art_from_queue_offset(int rel_offset, const char *reason)
+static void prefer_queue_json_title_artist(char *io_title, size_t title_cap, char *io_artist, size_t artist_cap);
+static esp_err_t __attribute__((unused)) apply_cached_art_from_queue_offset(int rel_offset, const char *reason)
 {
     char cached_art_key[YTMD_ART_URL_MAX_LEN] = {0};
     char cached_title[PLAYER_TITLE_MAX_LEN] = {0};
@@ -82,9 +90,66 @@ static void request_album_refresh_immediate(void)
         xTaskNotifyGive(s_album_task_handle);
     }
 }
+
+static void clear_pending_track_switch(void)
+{
+    s_pending_track_switch = false;
+    s_pending_track_switch_dir = 0;
+    s_pending_resume_after_ready = false;
+    s_pending_track_switch_deadline_tick = 0;
+    s_pending_from_title[0] = '\0';
+    s_pending_from_artist[0] = '\0';
+}
+
+static void maybe_resume_playback_after_switch(const char *reason)
+{
+    if (!s_pending_resume_after_ready) {
+        return;
+    }
+
+    if (s_player_state.is_playing) {
+        // Backend may auto-resume during track switch; avoid toggling to pause again.
+        s_pending_resume_after_ready = false;
+        ESP_LOGI(TAG, "CMD(play/resume:%s): skipped (already playing)", reason ? reason : "ready");
+        return;
+    }
+
+    esp_err_t err = ytmd_client_cmd_play_pause();
+    if (err == ESP_OK) {
+        s_player_state.is_playing = true;
+        ESP_LOGI(TAG, "CMD(play/resume:%s): sent", reason ? reason : "ready");
+    } else {
+        ESP_LOGW(TAG, "CMD(play/resume:%s) failed: %s", reason ? reason : "ready", esp_err_to_name(err));
+    }
+    s_pending_resume_after_ready = false;
+}
+static void begin_pending_track_switch(int dir, bool resume_after_ready)
+{
+    s_pending_track_switch = true;
+    s_pending_track_switch_dir = dir;
+    s_pending_resume_after_ready = resume_after_ready || s_pending_resume_after_ready;
+    s_pending_track_switch_deadline_tick =
+        (uint32_t)xTaskGetTickCount() + pdMS_TO_TICKS(YTMD_TRACK_SWITCH_PREP_TIMEOUT_MS);
+    snprintf(s_pending_from_title, sizeof(s_pending_from_title), "%s", s_player_state.title);
+    snprintf(s_pending_from_artist, sizeof(s_pending_from_artist), "%s", s_player_state.artist);
+    // Force next fetch to treat incoming art as fresh during transition.
+    s_last_art_url[0] = '\0';
+}
 static void ui_cmd_prev(void *user_ctx)
 {
     (void)user_ctx;
+
+    bool paused_by_us = false;
+    if (s_player_state.is_playing) {
+        esp_err_t pause_err = ytmd_client_cmd_play_pause();
+        if (pause_err == ESP_OK) {
+            paused_by_us = true;
+            s_player_state.is_playing = false;
+            ESP_LOGI(TAG, "CMD(pause before prev): sent");
+        } else {
+            ESP_LOGW(TAG, "CMD(pause before prev) failed: %s", esp_err_to_name(pause_err));
+        }
+    }
 
     // Make previous behavior deterministic: force head position first.
     esp_err_t seek_err = ytmd_client_cmd_seek_to(0);
@@ -97,23 +162,59 @@ static void ui_cmd_prev(void *user_ctx)
     esp_err_t err = ytmd_client_cmd_prev();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "CMD(prev): sent");
-        s_prev_transition_guard_until_tick = (uint32_t)xTaskGetTickCount() + pdMS_TO_TICKS(YTMD_PREV_TRANSITION_GUARD_MS);
-        (void)apply_cached_art_from_queue_offset(-1, "prev");
+        s_prev_transition_guard_until_tick =
+            (uint32_t)xTaskGetTickCount() + pdMS_TO_TICKS(YTMD_PREV_TRANSITION_GUARD_MS);
+        begin_pending_track_switch(-1, paused_by_us);
         request_album_refresh_immediate();
     } else {
+        if (paused_by_us) {
+            s_pending_resume_after_ready = true;
+            maybe_resume_playback_after_switch("prev_fail");
+        }
         ESP_LOGW(TAG, "CMD(prev) failed: %s", esp_err_to_name(err));
     }
 }
+
 static void ui_cmd_next(void *user_ctx)
 {
     (void)user_ctx;
+
+    bool paused_by_us = false;
+    if (s_player_state.is_playing) {
+        esp_err_t pause_err = ytmd_client_cmd_play_pause();
+        if (pause_err == ESP_OK) {
+            paused_by_us = true;
+            s_player_state.is_playing = false;
+            ESP_LOGI(TAG, "CMD(pause before next): sent");
+        } else {
+            ESP_LOGW(TAG, "CMD(pause before next) failed: %s", esp_err_to_name(pause_err));
+        }
+    }
+
     esp_err_t err = ytmd_client_cmd_next();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "CMD(next): sent");
+        begin_pending_track_switch(+1, paused_by_us);
         request_album_refresh_immediate();
     } else {
+        if (paused_by_us) {
+            s_pending_resume_after_ready = true;
+            maybe_resume_playback_after_switch("next_fail");
+        }
         ESP_LOGW(TAG, "CMD(next) failed: %s", esp_err_to_name(err));
     }
+}
+static bool is_same_track_signature(const char *title_a,
+                                    const char *artist_a,
+                                    const char *title_b,
+                                    const char *artist_b)
+{
+    const char *ta = title_a ? title_a : "";
+    const char *aa = artist_a ? artist_a : "";
+    const char *tb = title_b ? title_b : "";
+    const char *ab = artist_b ? artist_b : "";
+    return (strncmp(ta, tb, PLAYER_TITLE_MAX_LEN - 1) == 0) &&
+           (strncmp(aa, ab, PLAYER_ARTIST_MAX_LEN - 1) == 0);
 }
 
 static bool update_text_field(char *dst, size_t dst_cap, const char *src)
@@ -126,6 +227,27 @@ static bool update_text_field(char *dst, size_t dst_cap, const char *src)
     }
     snprintf(dst, dst_cap, "%s", src);
     return true;
+}
+
+
+static void prefer_queue_json_title_artist(char *io_title, size_t title_cap, char *io_artist, size_t artist_cap)
+{
+    if (!io_title || title_cap == 0 || !io_artist || artist_cap == 0) {
+        return;
+    }
+
+    ytmd_client_queue_compact_item_t selected = {0};
+    esp_err_t err = ytmd_client_queue_cache_get_selected_compact(&selected);
+    if (err != ESP_OK) {
+        return;
+    }
+
+    if (selected.title[0] != '\0') {
+        snprintf(io_title, title_cap, "%s", selected.title);
+    }
+    if (selected.artist[0] != '\0') {
+        snprintf(io_artist, artist_cap, "%s", selected.artist);
+    }
 }
 
 static bool apply_playback_state_to_player(const ytmd_client_playback_state_t *playback)
@@ -369,23 +491,76 @@ static void album_task(void *arg)
                                                      ncm_net_log_diagnostics);
 
         bool text_changed = false;
-        text_changed |= update_text_field(s_player_state.title, sizeof(s_player_state.title), new_title);
-        text_changed |= update_text_field(s_player_state.artist, sizeof(s_player_state.artist), new_artist);
+        bool playback_changed = false;
 
-        bool playback_changed = apply_playback_state_to_player(&playback_state);
+
 
         if (err == ESP_OK) {
-            s_prev_transition_guard_until_tick = 0;
-            ui_display_present_album_art();
-            player_ui_update_album_art();
-            snprintf(s_last_art_url, sizeof(s_last_art_url), "%s", new_art_url);
-            player_ui_update(&s_player_state);
-            ESP_LOGI(TAG, "Album art updated: %s", s_last_art_url);
-            ESP_LOGI(TAG, "Now playing: %s - %s",
-                     s_player_state.title[0] ? s_player_state.title : "-",
-                     s_player_state.artist[0] ? s_player_state.artist : "-");
+            bool waiting_for_new_track = false;
+            if (s_pending_track_switch) {
+                const bool has_track_text = (new_title[0] != '\0') || (new_artist[0] != '\0');
+                const bool same_track = is_same_track_signature(new_title,
+                                                                new_artist,
+                                                                s_pending_from_title,
+                                                                s_pending_from_artist);
+                waiting_for_new_track = (!has_track_text) || same_track;
+                if (waiting_for_new_track) {
+                    uint32_t now_tick_switch = (uint32_t)xTaskGetTickCount();
+                    if ((int32_t)(s_pending_track_switch_deadline_tick - now_tick_switch) <= 0) {
+                        ESP_LOGW(TAG, "Track switch song-confirm timeout: dir=%d", s_pending_track_switch_dir);
+                        maybe_resume_playback_after_switch("song_confirm_timeout");
+                        clear_pending_track_switch();
+                    }
+                }
+            }
+
+            if (!waiting_for_new_track) {
+                char display_title[PLAYER_TITLE_MAX_LEN] = {0};
+                char display_artist[PLAYER_ARTIST_MAX_LEN] = {0};
+                snprintf(display_title, sizeof(display_title), "%s", new_title);
+                snprintf(display_artist, sizeof(display_artist), "%s", new_artist);
+                prefer_queue_json_title_artist(display_title, sizeof(display_title), display_artist, sizeof(display_artist));
+
+                text_changed |= update_text_field(s_player_state.title, sizeof(s_player_state.title), display_title);
+                text_changed |= update_text_field(s_player_state.artist, sizeof(s_player_state.artist), display_artist);
+                playback_changed = apply_playback_state_to_player(&playback_state);
+                s_prev_transition_guard_until_tick = 0;
+                if (s_pending_track_switch) {
+                    maybe_resume_playback_after_switch((s_pending_track_switch_dir < 0) ? "prev_ready" : "next_ready");
+                    clear_pending_track_switch();
+                }
+                ui_display_present_album_art();
+                player_ui_update_album_art();
+                snprintf(s_last_art_url, sizeof(s_last_art_url), "%s", new_art_url);
+                player_ui_update(&s_player_state);
+                ESP_LOGI(TAG, "Album art updated: %s", s_last_art_url);
+                ESP_LOGI(TAG, "Now playing: %s - %s",
+                         s_player_state.title[0] ? s_player_state.title : "-",
+                         s_player_state.artist[0] ? s_player_state.artist : "-");
+            }
         } else {
             bool suppress_transient_update = false;
+            if (s_pending_track_switch) {
+                uint32_t now_tick_switch = (uint32_t)xTaskGetTickCount();
+                if ((int32_t)(s_pending_track_switch_deadline_tick - now_tick_switch) > 0) {
+                    suppress_transient_update = true;
+                } else {
+                    ESP_LOGW(TAG, "Track switch wait timeout: dir=%d", s_pending_track_switch_dir);
+                    maybe_resume_playback_after_switch("timeout");
+                    clear_pending_track_switch();
+                }
+            }
+            if (!s_pending_track_switch) {
+                char display_title[PLAYER_TITLE_MAX_LEN] = {0};
+                char display_artist[PLAYER_ARTIST_MAX_LEN] = {0};
+                snprintf(display_title, sizeof(display_title), "%s", new_title);
+                snprintf(display_artist, sizeof(display_artist), "%s", new_artist);
+                prefer_queue_json_title_artist(display_title, sizeof(display_title), display_artist, sizeof(display_artist));
+
+                text_changed |= update_text_field(s_player_state.title, sizeof(s_player_state.title), display_title);
+                text_changed |= update_text_field(s_player_state.artist, sizeof(s_player_state.artist), display_artist);
+                playback_changed = apply_playback_state_to_player(&playback_state);
+            }
             if (err == ESP_ERR_NOT_FOUND && s_prev_transition_guard_until_tick != 0) {
                 uint32_t now_tick_guard = (uint32_t)xTaskGetTickCount();
                 if ((int32_t)(s_prev_transition_guard_until_tick - now_tick_guard) > 0) {
@@ -413,7 +588,8 @@ static void album_task(void *arg)
             }
             last_queue_refresh_tick = now_tick;
         }
-        if ((now_tick - last_aux_enrich_tick) >= pdMS_TO_TICKS(YTMD_AUX_STATE_ENRICH_INTERVAL_MS)) {
+        if (!s_pending_track_switch &&
+            (now_tick - last_aux_enrich_tick) >= pdMS_TO_TICKS(YTMD_AUX_STATE_ENRICH_INTERVAL_MS)) {
             ytmd_client_playback_state_t aux_state = playback_state;
             if (ytmd_client_enrich_playback_state(&aux_state, ncm_net_log_diagnostics) == ESP_OK) {
                 if (apply_playback_state_to_player(&aux_state)) {
@@ -457,6 +633,7 @@ void app_main(void)
     }
 #endif
 }
+
 
 
 

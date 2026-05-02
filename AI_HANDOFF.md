@@ -28,7 +28,6 @@
   - `-ResetManagedComponents` 옵션 지원
 - 폴링 주기 단축
   - `YTMD_POLL_INTERVAL_MS: 2000 -> 500`
-- 앨범아트 프리패치 비동기화 + 요청 coalescing + 캐시 lock
 - album task 즉시 깨우기 경로 추가
   - `ulTaskNotifyTake` 기반 대기
   - next/prev 직후 즉시 refresh notify
@@ -143,9 +142,6 @@ powershell -ExecutionPolicy Bypass -File .\tools\start_clean_build.ps1 -ResetMan
 - Cache identity stability improvements:
   - track identity key includes `title + artist + duration`
   - queue-offset cache lookup includes duration hint for current track (`rel_offset == 0`)
-- Boot/startup behavior improvements:
-  - prefetch scheduling now still runs even when current art is `same_as_last`
-  - reduces case where only current song art is loaded until next track change
 - Logging cleanup:
   - queue override logs moved to debug-level style (`ESP_LOGD`) and emitted only when values actually change
 - Build policy this checkpoint: build was NOT executed (per user request).

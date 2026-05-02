@@ -36,11 +36,6 @@ typedef struct _objects_t {
     lv_obj_t *time_now;
     lv_obj_t *total_time;
     lv_obj_t *golist;
-    lv_obj_t *load5;
-    lv_obj_t *load4;
-    lv_obj_t *load3;
-    lv_obj_t *load2;
-    lv_obj_t *load1;
     lv_obj_t *playlist_area;
     lv_obj_t *return_main;
     lv_obj_t *nowplay;

@@ -102,6 +102,7 @@ esp_err_t ytmd_client_queue_cache_get_compact(ytmd_client_queue_compact_item_t *
                                               size_t *out_copied,
                                               size_t *out_total,
                                               int *out_selected_pos);
+esp_err_t ytmd_client_queue_cache_get_selected_compact(ytmd_client_queue_compact_item_t *out_item);
 
 esp_err_t ytmd_client_try_get_cached_art_by_queue_offset(int rel_offset,
                                                          uint16_t *dst_rgb565,
